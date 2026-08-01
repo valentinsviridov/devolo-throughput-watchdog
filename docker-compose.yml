@@ -1,11 +1,36 @@
 services:
   devolo-watchdog:
     build: .
-    container_name: devolo-throughput-watchdog
     network_mode: host
     restart: unless-stopped
+    read_only: true
+    stop_grace_period: 30s
+    security_opt:
+      - "no-new-privileges:true"
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_RAW
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     env_file:
       - devolo-throughput-watchdog.env
-    # Uncomment if using password file authentication:
-    # volumes:
-    #   - /etc/devolo-throughput-watchdog.password:/etc/devolo-throughput-watchdog.password:ro
+    environment:
+      - DW_STATE_FILE=/var/lib/devolo-watchdog/state.json
+      - DW_HEARTBEAT_FILE=/tmp/watchdog_heartbeat
+    volumes:
+      - devolo-state:/var/lib/devolo-watchdog
+      # Uncomment if using password file authentication:
+      # - /etc/devolo-throughput-watchdog.password:/etc/devolo-throughput-watchdog.password:ro
+
+volumes:
+  devolo-state:

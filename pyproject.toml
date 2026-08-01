@@ -5,27 +5,57 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "devolo-throughput-watchdog"
 version = "0.1.0"
-description = "Watchdog devolo Magic 2 LAN via public iperf3"
+description = "Watchdog devolo Magic 2 LAN via public and local iperf3"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "devolo watchdog maintainers" }
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Networking",
+]
 dependencies = [
     "devolo-plc-api==1.5.1",
 ]
 
 [project.scripts]
 devolo-watchdog = "devolo_watchdog.__main__:main"
+dev-test = "devolo_watchdog.dev:test"
+dev-lint = "devolo_watchdog.dev:lint"
+dev-check = "devolo_watchdog.dev:check"
 test = "devolo_watchdog.dev:test"
 lint = "devolo_watchdog.dev:lint"
 check = "devolo_watchdog.dev:check"
 
 [dependency-groups]
 dev = [
+    "pytest>=8.0.0",
+    "mypy>=1.8.0",
     "ruff>=0.3.0",
 ]
 
 [tool.ruff]
 line-length = 100
-target-version = "py39"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

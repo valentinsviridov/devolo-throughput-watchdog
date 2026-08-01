@@ -1,18 +1,20 @@
-"""Pure domain models, exceptions, and measurement cycle evaluation logic."""
+"""Domain models and evaluation compatibility layer."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
-from typing import Callable
+from collections.abc import Callable
 
 from devolo_watchdog.config import Settings
-
-
-class Status(str, Enum):
-    HEALTHY = "healthy"
-    DEGRADED = "degraded"
-    UNAVAILABLE = "measurement-unavailable"
+from devolo_watchdog.models import (
+    CycleResult,
+    GatewayProbeResult,
+    IperfSample,
+    LocalIperfResult,
+    MeasurementReport,
+    WanIperfResult,
+)
+from devolo_watchdog.policy import evaluate_report
+from devolo_watchdog.probes import ProbeError
 
 
 class IperfUnavailable(RuntimeError):
@@ -23,68 +25,54 @@ class IperfThroughputTimeout(RuntimeError):
     """A fixed-size iperf3 transfer did not complete before the deadline."""
 
 
-@dataclass(frozen=True)
-class IperfSample:
-    mbps: float
-    port: int
-
-
-@dataclass(frozen=True)
-class CycleResult:
-    status: Status
-    reason: str
-    upload_mbps: float | None = None
-    download_mbps: float | None = None
-    upload_port: int | None = None
-    download_port: int | None = None
-
-
 def evaluate_cycle(
     settings: Settings,
     ping_fn: Callable[[str, Settings], bool],
     iperf_fn: Callable[[Settings, bool], IperfSample],
+    local_iperf_fn: Callable[[Settings, bool], IperfSample] | None = None,
 ) -> CycleResult:
-    """Evaluate a single measurement cycle using local-first short-circuit probing."""
-    # Infrastructure Best Practice: Verify local gateway reachability first.
-    # If local gateway is unreachable, short-circuit immediately without wasting WAN timeouts.
-    gateway_ok = ping_fn(settings.remote_probe, settings)
-    if not gateway_ok:
-        return CycleResult(
-            Status.DEGRADED,
-            f"Local gateway ({settings.remote_probe}) is unreachable via ping",
-        )
+    """Legacy/compatibility entrypoint for single cycle evaluation."""
+    # 1. Ping gateway
+    gw_ok = ping_fn(settings.remote_probe, settings)
+    gw_res = GatewayProbeResult(reachable=gw_ok)
 
-    try:
-        upload = iperf_fn(settings, False)
-        download = iperf_fn(settings, True)
-    except IperfThroughputTimeout as exc:
-        return CycleResult(Status.DEGRADED, f"fixed-size throughput test timed out: {exc}")
-    except IperfUnavailable as exc:
-        return CycleResult(
-            Status.UNAVAILABLE,
-            f"public iperf service unavailable while local gateway is reachable: {exc}",
-        )
+    # 2. Local iperf
+    local_res: LocalIperfResult | None = None
+    if settings.local_iperf_server or local_iperf_fn is not None:
+        if local_iperf_fn is not None:
+            try:
+                up = local_iperf_fn(settings, False)
+                down = local_iperf_fn(settings, True)
+                local_res = LocalIperfResult(
+                    upload_mbps=up.mbps,
+                    download_mbps=down.mbps,
+                    port=up.port,
+                )
+            except Exception as exc:
+                local_res = LocalIperfResult(error=str(exc))
+        else:
+            from devolo_watchdog.probes import probe_local_iperf
 
-    low = []
-    if upload.mbps < settings.min_upload_mbps:
-        low.append(f"upload {upload.mbps:.1f} < {settings.min_upload_mbps:.1f} Mbit/s")
-    if download.mbps < settings.min_download_mbps:
-        low.append(f"download {download.mbps:.1f} < {settings.min_download_mbps:.1f} Mbit/s")
+            local_res = probe_local_iperf(settings)
 
-    if low:
-        return CycleResult(
-            Status.DEGRADED,
-            "; ".join(low),
-            upload.mbps,
-            download.mbps,
-            upload.port,
-            download.port,
-        )
-    return CycleResult(
-        Status.HEALTHY,
-        "throughput is above configured thresholds",
-        upload.mbps,
-        download.mbps,
-        upload.port,
-        download.port,
+    # 3. WAN iperf
+    wan_res: WanIperfResult | None = None
+    if gw_ok and (local_res is None or local_res.error is None):
+        try:
+            up_sample = iperf_fn(settings, False)
+            down_sample = iperf_fn(settings, True)
+            wan_res = WanIperfResult(
+                upload_mbps=up_sample.mbps,
+                download_mbps=down_sample.mbps,
+                upload_port=up_sample.port,
+                download_port=down_sample.port,
+            )
+        except (RuntimeError, ProbeError, IperfUnavailable, IperfThroughputTimeout) as exc:
+            wan_res = WanIperfResult(error=str(exc))
+
+    report = MeasurementReport(
+        gateway=gw_res,
+        local_iperf=local_res,
+        wan_iperf=wan_res,
     )
+    return evaluate_report(report, settings)

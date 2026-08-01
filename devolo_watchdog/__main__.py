@@ -3,38 +3,352 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
+import sys
+import time
+from typing import Any
 
+from devolo_watchdog.actions import read_password
 from devolo_watchdog.config import Settings
+from devolo_watchdog.probes import probe_gateway
 from devolo_watchdog.runner import run_daemon
+from devolo_watchdog.state import check_heartbeat
 
 LOG = logging.getLogger("devolo-throughput-watchdog")
 
 
 def build_parser() -> argparse.ArgumentParser:
+    common_parser = argparse.ArgumentParser(add_help=False)
+    common_parser.add_argument("--json", action="store_true", help="output results in JSON format")
+
     parser = argparse.ArgumentParser(
-        description="Measure WAN throughput via public iperf3 server and restart a devolo adapter."
+        prog="devolo-watchdog",
+        description="Watchdog for devolo Magic 2 LAN adapters via iperf3 throughput probing.",
+        parents=[common_parser],
     )
-    parser.add_argument("--once", action="store_true", help="run one measurement cycle and exit")
-    parser.add_argument(
+
+    subparsers = parser.add_subparsers(dest="subcommand", help="available subcommands")
+
+    # run / default
+    run_parser = subparsers.add_parser(
+        "run", parents=[common_parser], help="run watchdog daemon or single check"
+    )
+    run_parser.add_argument(
+        "--once", action="store_true", help="run one measurement cycle and exit"
+    )
+    run_parser.add_argument(
+        "--allow-action",
+        action="store_true",
+        help="allow hardware actions (reboot) during --once mode",
+    )
+    run_parser.add_argument(
         "--check-config", action="store_true", help="validate environment and exit"
     )
+
+    # doctor
+    subparsers.add_parser(
+        "doctor", parents=[common_parser], help="diagnose environment, binaries, DNS, and API"
+    )
+
+    # discover
+    subparsers.add_parser(
+        "discover", parents=[common_parser], help="discover devolo PLC network topology"
+    )
+
+    # calibrate
+    cal_parser = subparsers.add_parser(
+        "calibrate", parents=[common_parser], help="recommend thresholds from baseline probes"
+    )
+    cal_parser.add_argument(
+        "--samples", type=int, default=3, help="number of test cycles to run for calibration"
+    )
+
+    # healthcheck
+    hb_parser = subparsers.add_parser(
+        "healthcheck", parents=[common_parser], help="check heartbeat file freshness"
+    )
+    hb_parser.add_argument("--heartbeat-file", help="path to heartbeat file")
+
+    # Top-level backwards compatibility flags
+    parser.add_argument("--once", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--allow-action", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--check-config", action="store_true", help=argparse.SUPPRESS)
+
     return parser
+
+
+def run_doctor(settings: Settings | None, json_output: bool) -> int:
+    """Perform diagnostic checks on runtime environment and devolo device."""
+    results: list[dict[str, Any]] = []
+
+    def record(name: str, passed: bool, detail: str) -> None:
+        results.append({"check": name, "passed": passed, "detail": detail})
+
+    # Python version
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    py_ok = sys.version_info >= (3, 11)
+    record("python_version", py_ok, f"Python {py_ver} (requires >= 3.11)")
+
+    # System binaries
+    import shutil
+
+    iperf_bin = shutil.which("iperf3")
+    record("iperf3_binary", bool(iperf_bin), iperf_bin or "not found on PATH")
+
+    ping_bin = shutil.which("ping")
+    record("ping_binary", bool(ping_bin), ping_bin or "not found on PATH")
+
+    # Config
+    if settings is None:
+        record("configuration", False, "Failed to parse settings from environment")
+    else:
+        record(
+            "configuration",
+            True,
+            f"Gateway={settings.remote_probe}, Devolo={settings.devolo_ip}, "
+            f"Action={settings.action}",
+        )
+
+        # Password file check
+        if settings.password_file:
+            try:
+                read_password(settings.password_file)
+                record("password_file", True, f"Readable: {settings.password_file}")
+            except ValueError as exc:
+                record("password_file", False, str(exc))
+
+        # Gateway ping check
+        gw = probe_gateway(
+            settings.remote_probe, settings.ping_count, settings.ping_timeout_seconds
+        )
+        record("gateway_ping", gw.reachable, gw.error or f"Reachable: {settings.remote_probe}")
+
+        # Devolo adapter ping check
+        dev = probe_gateway(settings.devolo_ip, settings.ping_count, settings.ping_timeout_seconds)
+        record("devolo_ping", dev.reachable, dev.error or f"Reachable: {settings.devolo_ip}")
+
+        # Devolo API discovery check
+        try:
+            from devolo_watchdog.probes import probe_plc_phy
+
+            plc = probe_plc_phy(settings.devolo_ip, settings.password_file)
+            record("devolo_plc_api", plc.reachable, plc.error or "PLC API reachable")
+        except Exception as exc:
+            record("devolo_plc_api", False, str(exc))
+
+    all_passed = all(r["passed"] for r in results)
+    exit_code = 0 if all_passed else 1
+
+    if json_output:
+        print(json.dumps({"status": "ok" if all_passed else "error", "checks": results}, indent=2))
+    else:
+        print("=== devolo-watchdog doctor ===")
+        for r in results:
+            mark = "✓" if r["passed"] else "✗"
+            print(f"[{mark}] {r['check']}: {r['detail']}")
+
+    return exit_code
+
+
+def run_discover(settings: Settings, json_output: bool) -> int:
+    """Discover devolo devices, firmware, and PHY link topology."""
+    import asyncio
+
+    try:
+        from devolo_plc_api import Device
+    except ImportError:
+        print("Error: devolo_plc_api library is not installed", file=sys.stderr)
+        return 3
+
+    async def _discover() -> dict[str, Any]:
+        async with Device(ip=settings.devolo_ip) as device:
+            if password := read_password(settings.password_file):
+                device.password = password
+
+            info = {
+                "ip": settings.devolo_ip,
+                "serial_number": getattr(device, "serial_number", "unknown"),
+                "mac": getattr(device, "mac", "unknown"),
+            }
+
+            if device.plc:
+                try:
+                    overview = await device.plc.async_get_network_overview()
+                    info["devices"] = [
+                        {
+                            "mac": d.mac,
+                            "user_device_name": getattr(d, "user_device_name", ""),
+                            "rx_rate": d.rx_rate,
+                            "tx_rate": d.tx_rate,
+                            "attached_to_router": getattr(d, "attached_to_router", False),
+                        }
+                        for d in overview.devices
+                    ]
+                except Exception as exc:
+                    info["plc_overview_error"] = str(exc)
+
+            return info
+
+    try:
+        data = asyncio.run(_discover())
+        if json_output:
+            print(json.dumps(data, indent=2))
+        else:
+            print("=== Devolo Device Discovery ===")
+            print(f"IP: {data['ip']}")
+            print(f"MAC: {data['mac']}")
+            print(f"Serial: {data['serial_number']}")
+            if "devices" in data:
+                print("\nConnected PLC Nodes:")
+                for node in data["devices"]:
+                    rx = node["rx_rate"]
+                    tx = node["tx_rate"]
+                    print(f"  - MAC: {node['mac']}, RX: {rx} Mbps, TX: {tx} Mbps")
+        return 0
+    except Exception as exc:
+        print(f"Discovery failed: {exc}", file=sys.stderr)
+        return 2
+
+
+def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> int:
+    """Perform no-action throughput probing and recommend upload/download thresholds."""
+    print(f"Running {samples_count} calibration probes (no actions will be taken)...")
+    from devolo_watchdog.config import candidate_ports
+    from devolo_watchdog.probes import probe_wan_iperf
+
+    up_samples: list[float] = []
+    down_samples: list[float] = []
+
+    for i in range(samples_count):
+        now = time.time()
+        ports_up = candidate_ports(settings, reverse=False, now=now)
+        ports_down = candidate_ports(settings, reverse=True, now=now)
+        res = probe_wan_iperf(settings, ports_up, ports_down)
+
+        if res.upload_mbps is not None:
+            up_samples.append(res.upload_mbps)
+        if res.download_mbps is not None:
+            down_samples.append(res.download_mbps)
+
+        print(
+            f"Sample {i + 1}/{samples_count}: upload={res.upload_mbps} Mbps, "
+            f"download={res.download_mbps} Mbps"
+        )
+        if i < samples_count - 1:
+            time.sleep(2)
+
+    if not up_samples or not down_samples:
+        print("Calibration failed: insufficient valid samples", file=sys.stderr)
+        return 1
+
+    up_sorted = sorted(up_samples)
+    down_sorted = sorted(down_samples)
+
+    idx = max(0, int(len(up_sorted) * 0.10))
+    rec_up = round(up_sorted[idx] * 0.70, 1)
+    rec_down = round(down_sorted[idx] * 0.70, 1)
+
+    result_data = {
+        "samples": samples_count,
+        "upload_mbps": {
+            "min": min(up_samples),
+            "max": max(up_samples),
+            "avg": sum(up_samples) / len(up_samples),
+        },
+        "download_mbps": {
+            "min": min(down_samples),
+            "max": max(down_samples),
+            "avg": sum(down_samples) / len(down_samples),
+        },
+        "recommended_thresholds": {
+            "DW_MIN_UPLOAD_MBPS": rec_up,
+            "DW_MIN_DOWNLOAD_MBPS": rec_down,
+        },
+    }
+
+    if json_output:
+        print(json.dumps(result_data, indent=2))
+    else:
+        up_avg = sum(up_samples) / len(up_samples)
+        down_avg = sum(down_samples) / len(down_samples)
+        print("\n=== Calibration Complete ===")
+        print(
+            f"Upload   - Min: {min(up_samples):.1f} Mbps, "
+            f"Max: {max(up_samples):.1f} Mbps, Avg: {up_avg:.1f} Mbps"
+        )
+        print(
+            f"Download - Min: {min(down_samples):.1f} Mbps, "
+            f"Max: {max(down_samples):.1f} Mbps, Avg: {down_avg:.1f} Mbps"
+        )
+        print("\nRecommended Environment Variables:")
+        print(f"DW_MIN_UPLOAD_MBPS={rec_up}")
+        print(f"DW_MIN_DOWNLOAD_MBPS={rec_down}")
+
+    return 0
 
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args = build_parser().parse_args()
+
+    sub = args.subcommand
+    once = getattr(args, "once", False)
+    allow_action = getattr(args, "allow_action", False)
+    check_config = getattr(args, "check_config", False)
+    json_output = getattr(args, "json", False)
+
+    if sub == "healthcheck":
+        hb_path = (
+            getattr(args, "heartbeat_file", None)
+            or os.getenv("DW_HEARTBEAT_FILE")
+            or "/tmp/watchdog_heartbeat"
+        )
+        healthy = check_heartbeat(hb_path, max_age_seconds=90.0)
+        if healthy:
+            print("OK - Heartbeat fresh")
+            return 0
+        else:
+            print("CRITICAL - Heartbeat missing or stale", file=sys.stderr)
+            return 1
+
     try:
         settings = Settings.from_env()
     except ValueError as exc:
+        if sub == "doctor":
+            return run_doctor(None, json_output)
         LOG.error("configuration error: %s", exc)
-        return 2
+        return 3
 
-    if args.check_config:
+    if check_config:
+        if settings.password_file:
+            try:
+                read_password(settings.password_file)
+                LOG.info("password file valid: %s", settings.password_file)
+            except ValueError as exc:
+                LOG.error("password file check failed: %s", exc)
+                return 3
+
+        p_cnt = settings.ping_count
+        p_to = settings.ping_timeout_seconds
+        probe_res = probe_gateway(settings.remote_probe, p_cnt, p_to)
+        devolo_res = probe_gateway(settings.devolo_ip, p_cnt, p_to)
+
+        if not probe_res.reachable or not devolo_res.reachable:
+            LOG.error(
+                "configuration check failed: remote_probe reachable=%s (%s), "
+                "devolo_ip reachable=%s (%s)",
+                probe_res.reachable,
+                probe_res.error,
+                devolo_res.reachable,
+                devolo_res.error,
+            )
+            return 2
+
         LOG.info(
             "configuration valid: iperf_server=%s ports=%d-%d test_bytes=%s "
-            "remote_probe=%s devolo_ip=%s min_upload=%.1fMbps "
+            "remote_probe=%s (reachable=True) devolo_ip=%s (reachable=True) min_upload=%.1fMbps "
             "min_download=%.1fMbps action=%s",
             settings.iperf_server,
             min(settings.iperf_ports),
@@ -47,8 +361,17 @@ def main() -> int:
             settings.action,
         )
         return 0
-    return run_daemon(settings, once=args.once)
+
+    if sub == "doctor":
+        return run_doctor(settings, json_output)
+    elif sub == "discover":
+        return run_discover(settings, json_output)
+    elif sub == "calibrate":
+        samples = getattr(args, "samples", 3)
+        return run_calibrate(settings, samples, json_output)
+
+    return run_daemon(settings, once=once, allow_action=allow_action)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    sys.exit(main())

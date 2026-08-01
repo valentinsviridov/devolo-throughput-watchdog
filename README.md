@@ -1,87 +1,113 @@
-# Watchdog devolo Magic 2 LAN via Public iperf3
+# Watchdog devolo Magic 2 LAN via Public & Local iperf3 Control
 
-The watchdog runs on a Linux host connected behind a PLC (PowerLine Communication) link and measures upload/download throughput using a public iperf3 server. After several consecutive degradation failures, it can automatically reboot the nearest devolo adapter via its management API.
+The watchdog runs on a Linux host connected behind a PLC (PowerLine Communication) link and measures upload/download throughput using public and/or local iperf3 endpoints. After several consecutive degradation failures backed by PLC-specific evidence, it can automatically reboot the nearest devolo adapter via its management API.
 
-This is an end-to-end measurement: the result includes the PLC link, local gateway router, and access network. While it cannot distinguish a PLC issue from an ISP network failure with 100% precision, it provides an effective automated recovery mechanism for observed user throughput degradation.
+State transitions and circuit-breaker status are persisted atomically to a JSON state file (`/var/lib/devolo-watchdog/state.json`), preventing counter resets on container or daemon restarts.
 
 ---
 
-## System Architecture & Flow
-
-### Component Topology
+## System Architecture & Component Topology
 
 ```mermaid
 graph TD
-    subgraph Host ["Linux Container Host (network_mode: host)"]
-        Daemon["devolo-throughput-watchdog Daemon"]
-        subgraph Package ["devolo_watchdog Module"]
-            Runner["runner.py"]
-            Core["core.py"]
-            Network["network.py"]
-            Actions["actions.py"]
-            Config["config.py"]
+    subgraph Host ["Linux Host / Container (network_mode: host, non-root)"]
+        Daemon["devolo-watchdog Daemon / CLI"]
+        subgraph Package ["devolo_watchdog Package"]
+            Main["__main__.py (CLI Subcommands)"]
+            Runner["runner.py (Loop & Signals)"]
+            Probes["probes.py (Typed Adapters)"]
+            Policy["policy.py (Pure Evaluation & State Transitions)"]
+            Models["models.py (Typed Reports & State)"]
+            State["state.py (Atomic File Store & Heartbeat)"]
+            Actions["actions.py (Devolo Device API)"]
+            Config["config.py (Settings & Validation)"]
         end
     end
 
-    subgraph LAN ["Local Subnet (PowerLine LAN)"]
+    subgraph Storage ["Persistent State Volume"]
+        StateFile["state.json (/var/lib/devolo-watchdog/state.json)"]
+        HeartbeatFile["watchdog_heartbeat (/tmp/watchdog_heartbeat)"]
+    end
+
+    subgraph LAN ["Local Subnet (PowerLine Network)"]
         Gateway["Default Gateway Router\n(e.g., 192.168.1.1)"]
+        LocalIperf["Optional Local iperf3 Server\n(e.g., 192.168.1.100:5201)"]
         Devolo["devolo Magic 2 LAN Adapter\n(e.g., 192.168.1.20)"]
     end
 
-    subgraph WAN ["WAN / Internet"]
-        PublicIperf["Public iperf3 Server\n(e.g., iperf.example.com:5201-5205)"]
+    subgraph WAN ["Internet / Public Net"]
+        PublicIperf["Public iperf3 Servers\n(e.g., iperf.example.com:5201-5205)"]
     end
 
-    Runner --> Core
-    Core --> Network
-    Network -- "1. ICMP Ping Probe" --> Gateway
-    Network -- "2. Fixed 64M iperf3 Test" --> PublicIperf
+    Main --> Runner
+    Runner --> Probes
+    Runner --> Policy
+    Runner --> State
     Runner --> Actions
-    Actions -- "3. HTTP/gRPC Reboot API" --> Devolo
+    Policy --> Models
+    State --> StateFile
+    State --> HeartbeatFile
+
+    Probes -- "1. ICMP Ping Probe" --> Gateway
+    Probes -- "2. Local PLC Speed Test" --> LocalIperf
+    Probes -- "3. PLC PHY Link Overview" --> Devolo
+    Probes -- "4. Public WAN Throughput" --> PublicIperf
+    Actions -- "5. devolo async_restart()" --> Devolo
 ```
 
 ---
 
-### Measurement Cycle Algorithm
+## Measurement Cycle Algorithm
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Daemon as Daemon Loop
-    participant Core as core.evaluate_cycle()
-    participant Ping as network.ping()
-    participant Gateway as Local Gateway Router
-    participant Iperf as network.run_iperf()
-    participant Server as Public iperf3 Server
+    actor Runner as Daemon Runner Loop
+    participant Probes as probes.py
+    participant Policy as policy.evaluate_report()
+    participant Transition as policy.transition()
+    participant Store as state.StateStore
+    participant Actions as actions.restart_devolo()
 
-    Daemon->>Core: Trigger cycle evaluation
-    Core->>Ping: Check gateway (remote_probe)
-    Ping->>Gateway: ICMP Echo Request
-    alt Gateway Unreachable (Ping Fail)
-        Gateway-->>Ping: Timeout / Host Unreachable
-        Ping-->>Core: False
-        Core-->>Daemon: CycleResult(Status.DEGRADED, Gateway Unreachable)
-        note over Core,Daemon: Short-circuit: skip WAN probing to save time
-    else Gateway Reachable (Ping Pass)
-        Gateway-->>Ping: ICMP Echo Reply
-        Ping-->>Core: True
-        Core->>Iperf: Measure Upload (64M)
-        Iperf->>Server: iperf3 client test (Upload)
-        alt Public Ports Busy / Down
-            Server-->>Iperf: Connection refused / Busy
-            Iperf-->>Core: raise IperfUnavailable
-            Core-->>Daemon: CycleResult(Status.UNAVAILABLE, Public iperf busy)
-            note over Core,Daemon: Server outage: do NOT blame devolo PLC link
-        else Upload Success
-            Server-->>Iperf: Throughput Mbit/s
-            Core->>Iperf: Measure Download (64M)
-            Iperf->>Server: iperf3 client test (Download)
-            Server-->>Iperf: Throughput Mbit/s
-            Iperf-->>Core: IperfSample(mbps, port)
-            alt Upload & Download >= Thresholds
-                Core-->>Daemon: CycleResult(Status.HEALTHY)
-            else Upload or Download < Thresholds / Timeout
-                Core-->>Daemon: CycleResult(Status.DEGRADED)
+    Runner->>Probes: Probe Gateway (ICMP Ping)
+    alt Gateway Unreachable / Ping Binary Missing
+        Probes-->>Runner: GatewayProbeResult(reachable=False)
+    else Gateway Reachable
+        Probes-->>Runner: GatewayProbeResult(reachable=True)
+        opt Local iperf Server Configured
+            Runner->>Probes: Probe Local iperf3 (Upload & Download)
+            Probes-->>Runner: LocalIperfResult
+        end
+        opt Devolo IP Configured
+            Runner->>Probes: Query PLC PHY Rates (async_get_network_overview)
+            Probes-->>Runner: PlcPhyResult
+        end
+        Runner->>Probes: Probe WAN iperf3 (Rotated Candidate Ports)
+        Probes-->>Runner: WanIperfResult
+    end
+
+    Runner->>Policy: evaluate_report(MeasurementReport, Settings)
+    Policy-->>Runner: CycleResult(Status, reason, upload, download, ports)
+
+    Runner->>Transition: transition(WatchdogState, CycleResult, Settings, now)
+    Transition-->>Runner: (updated_state, ActionType, action_reason)
+
+    Runner->>Store: save(updated_state)
+
+    alt ActionType == REBOOT
+        alt --once mode without --allow-action
+            Runner->>Runner: Log warning: Dry-run active (skip reboot)
+        else Reboot Allowed
+            Runner->>Store: record_reboot(now, accepted=False)
+            Runner->>Actions: restart_devolo(Settings)
+            alt Reboot Accepted
+                Actions-->>Runner: True
+                Runner->>Store: record_reboot(now, accepted=True)
+                Runner->>Runner: Wait post_reboot_delay_seconds
+                Runner->>Policy: Post-reboot Verification Probe
+            else Reboot Rejected / Error
+                Actions-->>Runner: False / Exception
+                Runner->>Runner: Log error (Attempt counted in state)
             end
         end
     end
@@ -89,78 +115,75 @@ sequenceDiagram
 
 ---
 
-### Daemon Health State Machine
+## State Machine & Moving-Window Circuit Breaker
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Idle
+    [*] --> LoadState
 
-    state Idle {
-        [*] --> WaitingInterval
-        WaitingInterval --> TriggerCycle: Interval Expired (10 min)
+    state LoadState {
+        [*] --> ReadStateFile
+        ReadStateFile --> ActiveState: state.json loaded / initialized
     }
 
-    TriggerCycle --> EvaluateHealth
+    ActiveState --> EvaluateCycle
 
-    state EvaluateHealth {
-        [*] --> CheckGateway
-        CheckGateway --> CheckWAN: Gateway Online
-        CheckGateway --> Degraded: Gateway Offline (Short-circuit)
-        CheckWAN --> Healthy: Speeds >= Threshold
-        CheckWAN --> Unavailable: Public iperf Busy
-        CheckWAN --> Degraded: Speeds < Threshold / Timeout
+    state EvaluateCycle {
+        [*] --> RunProbes
+        RunProbes --> CheckStatus
+        CheckStatus --> Healthy: Upload/Download >= Thresholds
+        CheckStatus --> Degraded: Local PLC or PHY Rate < Threshold
+        CheckStatus --> Unavailable: Gateway Unreachable / WAN-only Slowness / Probe Error
+        CheckStatus --> Misconfigured: System Binary Missing / Invalid Config
     }
 
-    Healthy --> ResetCounter
-    ResetCounter --> WaitingInterval: failures = 0
+    Healthy --> ResetStreak: consecutive_failures = 0, breaker_tripped = False
+    Unavailable --> ResetStreak: consecutive_failures = 0 (streak must be strictly consecutive)
+    Misconfigured --> IdleWait: Ignore failure counter
 
-    Unavailable --> ResetCounter: failures = 0 (No penalty)
+    Degraded --> IncrementStreak: consecutive_failures += 1
+    IncrementStreak --> IdleWait: consecutive_failures < DW_FAIL_LIMIT (3)
+    IncrementStreak --> TriggerAction: consecutive_failures >= DW_FAIL_LIMIT (3)
 
-    Degraded --> IncrementCounter: failures += 1
-    IncrementCounter --> WaitingInterval: failures < DW_FAIL_LIMIT (3)
-    IncrementCounter --> ActionTriggered: failures >= DW_FAIL_LIMIT (3)
-
-    state ActionTriggered {
-        [*] --> CheckActionType
-        CheckActionType --> RebootDevice: DW_ACTION == reboot
-        CheckActionType --> LogOnly: DW_ACTION == log
-        RebootDevice --> TriggerDevoloAPI: POST /device/restart
-        TriggerDevoloAPI --> Cooldown: API Response Accepted
-        LogOnly --> Cooldown: Log warning
+    state TriggerAction {
+        [*] --> CheckWindowRateLimit
+        CheckWindowRateLimit --> CircuitBreakerActive: reboots in window >= DW_MAX_REBOOTS_IN_WINDOW (3 in 6h)
+        CheckWindowRateLimit --> ExecuteReboot: reboots in window < DW_MAX_REBOOTS_IN_WINDOW
+        CircuitBreakerActive --> IdleWait: Log Circuit Breaker Active (Skip Reboot)
+        ExecuteReboot --> RecordAttempt: Record attempt timestamp in state file BEFORE API call
+        RecordAttempt --> CallDevoloAPI: async_restart()
+        CallDevoloAPI --> PostRebootVerify: API Success
+        PostRebootVerify --> ResetStreak: Verification HEALTHY
+        PostRebootVerify --> IdleWait: Verification Failed
+        CallDevoloAPI --> IdleWait: API Error / Rejected (Attempt retained)
     }
 
-    Cooldown --> ResetCounter: Wait DW_COOLDOWN_SECONDS (10 min)
+    ResetStreak --> IdleWait
+    IdleWait --> EvaluateCycle: Sleep interval_seconds (or cooldown_seconds)
 ```
 
 ---
 
 ## Features & Mechanics
 
-- Uses configurable public iperf3 ports (e.g. `5201–5205`).
-- When encountering `server busy`, the watchdog retries up to five adjacent ports.
-- Port rotation: the initial port shifts between measurement cycles, and upload/download start on different ports.
-- Transfers a fixed volume of data (`64M` default) in each direction instead of a fixed duration test.
-- If public iperf ports are unavailable but the local gateway responds to ping, the event is categorized as a measurement infrastructure issue and does **not** trigger a reboot.
-- If a `64M` transfer does not complete within 30 seconds, the test is marked as degraded.
+- **Strict Evidence Requirement**: Public WAN slowness alone will not trigger a reboot unless confirmed by local iperf degradation or low devolo PLC PHY link speeds (`DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT=true`).
+- **Moving Window Rate Limiting**: Enforces max reboot limits over a moving time window (default 3 reboots in 6 hours).
+- **Pre-Attempt Action Accounting**: Records reboot attempt timestamps in state *before* issuing management API calls, preventing infinite retry loops on rejected requests or exceptions.
+- **Safe `--once` Execution**: One-shot CLI execution defaults to dry-run mode. Hardware reboot actions require explicit `--allow-action`.
+- **Atomic State Persistence**: State is saved to `/var/lib/devolo-watchdog/state.json` via temporary file writing and atomic file replacement (`os.replace`).
+- **Container Heartbeat & Healthcheck**: Updates `/tmp/watchdog_heartbeat` on every cycle, verified by `devolo-watchdog healthcheck`.
+- **Diagnostic Tooling**: Subcommands for `doctor` (system diagnostics), `discover` (PLC topology & speeds), `calibrate` (baseline speed measurements & threshold recommendations), and `run`.
 
 ---
 
-## Quick Start via Docker & Docker Compose (Recommended)
+## Quick Start via Docker Compose (Recommended)
 
-Ensure Docker and Docker Compose are installed on your host system.
+### 1. Environment Setup
 
-### 1. Configuration Setup
-
-Copy the example environment file:
+Copy example environment configuration:
 
 ```bash
 cp devolo-throughput-watchdog.env.example devolo-throughput-watchdog.env
-```
-
-Find your local default gateway IP address:
-
-```bash
-ip route show default
 ```
 
 Edit `devolo-throughput-watchdog.env`:
@@ -174,117 +197,136 @@ DW_MIN_DOWNLOAD_MBPS=100
 DW_ACTION=log
 ```
 
-If the devolo web interface is password-protected, set `DW_PASSWORD_FILE` or mount your password file into the container.
-
-### 2. Validate Configuration & Run One-Shot Test
+### 2. Run Diagnostics
 
 ```bash
-# Validate environment configuration inside container
-docker compose run --rm devolo-watchdog --check-config
-
-# Run a single measurement cycle
-docker compose run --rm devolo-watchdog --once
+docker compose run --rm devolo-watchdog doctor
 ```
 
-### 3. Start Daemon Service
+### 3. Start Watchdog Daemon Service
 
 ```bash
 docker compose up -d
-```
-
-View live logs:
-
-```bash
 docker compose logs -f
 ```
 
-> **Important**: The container runs with `network_mode: host` so `iperf3` and `ping` measure throughput directly on host network interfaces and access devolo adapters on the local subnet.
-
 ---
 
-## Local Execution via `uv` (Without Docker)
+## CLI Command Reference
 
-The project uses [uv](https://github.com/astral-sh/uv) as its Python package manager.
+### Diagnostics (`doctor`)
+Runs a comprehensive environment check (Python version, binaries, DNS, password readability, gateway reachability, devolo IP reachability, and management API access):
 
 ```bash
-# Validate configuration (uv automatically syncs environment)
-uv run devolo-watchdog --check-config
+uv run devolo-watchdog doctor
+# Or formatted as JSON
+uv run devolo-watchdog --json doctor
+# Or passing --json before command
+uv run devolo-watchdog doctor --json
+```
 
-# Single test run
-uv run devolo-watchdog --once
+### Discovery (`discover`)
+Queries devolo device hardware details, serial number, connected nodes, and PHY speeds:
 
-# Run daemon mode
-uv run devolo-watchdog
+```bash
+uv run devolo-watchdog discover
+```
+
+### Threshold Calibration (`calibrate`)
+Runs no-action measurements and recommends upload/download minimum thresholds:
+
+```bash
+uv run devolo-watchdog calibrate --samples 5
+```
+
+### Daemon / Single Check (`run`)
+
+```bash
+# Single check (dry-run mode)
+uv run devolo-watchdog run --once
+
+# Single check with reboot action allowed
+uv run devolo-watchdog run --once --allow-action
+
+# Daemon mode
+uv run devolo-watchdog run
 ```
 
 ---
 
-## Development Tasks (Tests & Linter)
-
-Development tasks are defined directly as native script entrypoints in `pyproject.toml` and executed with `uv`:
+## Development & Test Commands
 
 ```bash
-# Run full unit test suite
-uv run test
-
-# Check code style and lints (Ruff)
+# Run linter and formatting checks
 uv run lint
+# Or: uv run dev-lint
 
-# Run both linter and unit tests
+# Run unit test suite
+uv run test
+# Or: uv run dev-test
+
+# Run full lint + test check
 uv run check
+# Or: uv run dev-check
 ```
 
 ---
 
-## Manual iperf3 Verification
+## Local iperf3 Control Setup Guide
+
+When using a local control server (`DW_LOCAL_IPERF_SERVER`), note that standard `iperf3` serves one active test connection at a time.
+
+Run `iperf3` in server mode on your default gateway router or local target host:
 
 ```bash
-iperf3 -c iperf.example.com -p 5201 -n 64M
-iperf3 -c iperf.example.com -p 5202 -R -n 64M
+iperf3 --server --daemon --port 5201
 ```
 
-`server is busy` responses are expected on public servers — retry using another port within configured ranges.
-
----
-
-## Calibration & Action Mode
-
-1. Keep `DW_ACTION=log` initially in `devolo-throughput-watchdog.env`.
-2. Collect logs for at least 24 hours. Log output format:
-
-```text
-status=healthy failures=0/3 upload=321.4Mbps@5201 download=287.8Mbps@5202
-status=degraded failures=1/3 upload=18.2Mbps@5201 download=14.7Mbps@5202
-```
-
-3. Set threshold levels significantly below typical speeds (e.g. 30–50% of normal value).
-4. Once verified, enable automatic reboot by setting `DW_ACTION=reboot` and restarting:
-
-```bash
-docker compose restart
-```
-
----
-
-## Network Traffic Usage
-
-Each normal cycle transfers approximately `64M + 64M = 128M`. At an interval of 10 minutes, maximum daily traffic is around 18.4 GB. To reduce data usage:
+Set watchdog configuration:
 
 ```ini
-DW_TEST_BYTES=32M
-DW_INTERVAL_SECONDS=900
+DW_LOCAL_IPERF_SERVER=192.168.1.100
+DW_LOCAL_IPERF_PORT=5201
 ```
-
-*Note: Smaller test sizes decrease high-speed accuracy due to TCP slow start. Avoid setting below `16M`.*
 
 ---
 
 ## Decision Matrix
 
-| Observation | Status Result | Counter Effect |
+| Observation | Status Result | Counter / State Effect |
 | --- | --- | --- |
 | Upload and download above thresholds | `healthy` | Failure counter reset to 0 |
-| Either direction below threshold | `degraded` | Failure counter incremented |
-| Transfer did not finish within timeout | `degraded` | Failure counter incremented |
-| Public ports unreachable, local gateway responds | `measurement-unavailable` | Ignored (counter reset) |
-| Both public ports and local gateway unreachable | `degraded` | Failure counter incremented |
+| Local PLC link or PLC PHY rate degraded | `degraded` | Failure counter incremented |
+| WAN low, but local PLC link verified healthy | `measurement-unavailable` | Failure counter reset to 0 |
+| WAN low, but no local PLC probe configured | `measurement-unavailable` | Failure counter reset to 0 |
+| Local gateway or iperf probe unreachable | `measurement-unavailable` | Failure counter reset to 0 |
+| System binary missing / invalid config | `misconfigured` | Counter untouched |
+| Max reboot attempts reached in window | `circuit-breaker` | Reboot skipped, circuit breaker active |
+
+---
+
+## Configuration Reference
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DW_IPERF_SERVER` | `iperf.example.com` | Public iperf3 server hostname |
+| `DW_IPERF_PORTS` | `5201-5205` | Range/list of public iperf3 candidate ports |
+| `DW_REMOTE_PROBE` | *Required* | Local default gateway IP address |
+| `DW_DEVOLO_IP` | *Required* | Devolo adapter IP address |
+| `DW_MIN_UPLOAD_MBPS` | *Required* | Minimum acceptable WAN upload speed |
+| `DW_MIN_DOWNLOAD_MBPS` | *Required* | Minimum acceptable WAN download speed |
+| `DW_LOCAL_MIN_UPLOAD_MBPS` | `None` | Optional separate local upload threshold |
+| `DW_LOCAL_MIN_DOWNLOAD_MBPS` | `None` | Optional separate local download threshold |
+| `DW_ACTION` | `log` | Action mode: `log` or `reboot` |
+| `DW_FAIL_LIMIT` | `3` | Consecutive degraded cycles before triggering action |
+| `DW_LOCAL_IPERF_SERVER` | `None` | Optional local far-side iperf3 server IP |
+| `DW_LOCAL_IPERF_PORT` | `5201` | Local iperf3 server port |
+| `DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT` | `true` | Require local probe or PHY evidence before reboot |
+| `DW_MIN_PLC_PHY_RATE_MBPS` | `50.0` | Minimum acceptable devolo PLC PHY RX/TX link rate |
+| `DW_MAX_REBOOT_ATTEMPTS` | `3` | Legacy max consecutive reboot attempts setting |
+| `DW_MAX_REBOOTS_IN_WINDOW` | `3` | Max reboots allowed within moving window |
+| `DW_REBOOT_WINDOW_HOURS` | `6.0` | Time window hours for circuit breaker rate limiting |
+| `DW_POST_REBOOT_DELAY_SECONDS` | `45` | Post-reboot delay before health verification |
+| `DW_STATE_FILE` | `/var/lib/devolo-watchdog/state.json` | Persistent state JSON path |
+| `DW_HEARTBEAT_FILE` | `/tmp/watchdog_heartbeat` | Healthcheck heartbeat file path |
+| `DW_LOG_FORMAT` | `text` | Structured log output format: `text` or `json` |

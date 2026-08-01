@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from pathlib import Path
 
 from devolo_watchdog.config import Settings
+
+LOG = logging.getLogger("devolo-throughput-watchdog")
 
 
 def read_password(path: str | None) -> str | None:
@@ -17,11 +21,21 @@ def read_password(path: str | None) -> str | None:
         raise ValueError(f"DW_PASSWORD_FILE unreadable ({path}): {exc}") from None
 
 
-def restart_devolo(settings: Settings) -> bool:
-    """Reboot the specified devolo device via its management API."""
-    from devolo_plc_api import Device
+async def async_restart_devolo(settings: Settings) -> bool:
+    """Reboot the specified devolo device asynchronously via its management API."""
+    try:
+        from devolo_plc_api import Device
+    except ImportError:
+        raise RuntimeError("devolo_plc_api library is not installed") from None
 
-    with Device(ip=settings.devolo_ip) as device:
+    async with Device(ip=settings.devolo_ip) as device:
         if password := read_password(settings.password_file):
             device.password = password
-        return bool(device.device.restart())
+        if device.device is None:
+            raise RuntimeError(f"Devolo device at {settings.devolo_ip} does not support Device API")
+        return await device.device.async_restart()
+
+
+def restart_devolo(settings: Settings) -> bool:
+    """Reboot the specified devolo device via its management API."""
+    return asyncio.run(async_restart_devolo(settings))
