@@ -1,0 +1,11 @@
+services:
+  devolo-watchdog:
+    build: .
+    container_name: devolo-throughput-watchdog
+    network_mode: host
+    restart: unless-stopped
+    env_file:
+      - devolo-throughput-watchdog.env
+    # Uncomment if using password file authentication:
+    # volumes:
+    #   - /etc/devolo-throughput-watchdog.password:/etc/devolo-throughput-watchdog.password:ro

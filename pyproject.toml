@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "devolo-throughput-watchdog"
+version = "0.1.0"
+description = "Watchdog devolo Magic 2 LAN via public iperf3"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "devolo-plc-api==1.5.1",
+]
+
+[project.scripts]
+devolo-watchdog = "devolo_watchdog.__main__:main"
+test = "devolo_watchdog.dev:test"
+lint = "devolo_watchdog.dev:lint"
+check = "devolo_watchdog.dev:check"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.3.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

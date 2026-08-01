@@ -1,0 +1,23 @@
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE & Cache directories
+.idea/
+.vscode/
+.ruff_cache/
+.pytest_cache/
+
+# Local environment configuration
+devolo-throughput-watchdog.env
+*.password
