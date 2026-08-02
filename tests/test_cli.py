@@ -154,9 +154,14 @@ class CliParserTests(unittest.TestCase):
             error="WAN upload test failed: port 5201: connect failed"
         )
         st = make_settings()
-        with patch("sys.stderr"):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
             code = run_calibrate(st, samples_count=2, json_output=False)
         self.assertEqual(code, 1)
+        self.assertIn("upload=unavailable Mbps", stdout.getvalue())
+        self.assertIn("download=unavailable Mbps", stdout.getvalue())
+        self.assertIn("Calibration failed", stderr.getvalue())
         mock_sleep.assert_called_once_with(2)
 
     @patch("time.sleep")

@@ -151,8 +151,7 @@ class RunDirectionTests(unittest.TestCase):
         st = make_settings()
         sample, err = probe_iperf_direction(st, (5201, 5202), reverse=False)
         self.assertIsNone(sample)
-        self.assertIn("port 5201: connection refused", err)
-        self.assertIn("port 5202: timeout", err)
+        self.assertEqual(err, "port 5201: connection refused; port 5202: timeout")
 
 
 class ProbeWanIperfTests(unittest.TestCase):
@@ -176,7 +175,16 @@ class ProbeWanIperfTests(unittest.TestCase):
         st = make_settings()
         res = probe_wan_iperf(st, (5201,), (5202,))
         self.assertIsNone(res.upload_mbps)
-        self.assertIn("WAN upload test failed: all ports rejected", res.error)
+        self.assertEqual(res.error, "WAN upload test failed: all ports rejected")
+
+    @patch("devolo_watchdog.probes.probe_iperf_direction")
+    def test_probe_wan_iperf_missing_error_gets_fallback(self, mock_direction):
+        mock_direction.return_value = (None, None)
+        st = make_settings()
+
+        res = probe_wan_iperf(st, (5201,), (5202,))
+
+        self.assertEqual(res.error, "WAN upload test failed: unknown error")
 
     @patch("devolo_watchdog.probes.probe_iperf_direction")
     def test_probe_wan_iperf_download_failure(self, mock_direction):
@@ -190,7 +198,7 @@ class ProbeWanIperfTests(unittest.TestCase):
         res = probe_wan_iperf(st, (5201,), (5202,))
         self.assertEqual(res.upload_mbps, 150.0)
         self.assertIsNone(res.download_mbps)
-        self.assertIn("WAN download test failed: download port closed", res.error)
+        self.assertEqual(res.error, "WAN download test failed: download port closed")
 
 
 class ProbeGatewayTests(unittest.TestCase):
@@ -218,35 +226,35 @@ class ProbeGatewayTests(unittest.TestCase):
         ]
         res = probe_gateway("192.168.1.1")
         self.assertFalse(res.reachable)
-        self.assertIn("Destination Host Unreachable", res.error)
+        self.assertEqual(res.error, "ping exit code 1: Destination Host Unreachable")
 
     @patch("subprocess.run")
     def test_probe_gateway_exit_code_1(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1, stderr="100% packet loss")
         res = probe_gateway("192.168.1.1")
         self.assertFalse(res.reachable)
-        self.assertIn("ping exit code 1", res.error)
+        self.assertEqual(res.error, "ping exit code 1: 100% packet loss")
 
     @patch("subprocess.run")
     def test_probe_gateway_missing_binary(self, mock_run):
         mock_run.side_effect = FileNotFoundError()
         res = probe_gateway("192.168.1.1")
         self.assertFalse(res.reachable)
-        self.assertIn("ping binary missing", res.error)
+        self.assertEqual(res.error, "ping binary missing on system")
 
     @patch("subprocess.run")
     def test_probe_gateway_timeout(self, mock_run):
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="ping", timeout=5)
         res = probe_gateway("192.168.1.1")
         self.assertFalse(res.reachable)
-        self.assertIn("ping command timed out", res.error)
+        self.assertEqual(res.error, "ping command timed out after 7s")
 
     @patch("subprocess.run")
     def test_probe_gateway_generic_exception(self, mock_run):
         mock_run.side_effect = OSError("Permission denied")
         res = probe_gateway("192.168.1.1")
         self.assertFalse(res.reachable)
-        self.assertIn("ping execution failed", res.error)
+        self.assertEqual(res.error, "ping execution failed: Permission denied")
 
 
 class PlcPhyProbeTests(unittest.TestCase):
@@ -295,18 +303,47 @@ class PlcPhyProbeTests(unittest.TestCase):
 
         res = probe_plc_phy("192.168.1.20")
         self.assertTrue(res.reachable)
-        self.assertIn("PLC API not supported", res.error)
+        self.assertEqual(res.error, "PLC API not supported by device")
+
+    @patch("devolo_plc_api.Device")
+    def test_async_probe_plc_phy_filters_invalid_rate_values(self, mock_device_cls):
+        mock_device = AsyncMock()
+        mock_device_cls.return_value = mock_device
+        mock_device.__aenter__.return_value = mock_device
+        mock_device.mac = "AA:BB:CC:DD:EE:FF"
+
+        invalid_rate = MagicMock(
+            rx_rate=object(),
+            tx_rate="invalid",
+            mac_address_from=mock_device.mac,
+            mac_address_to="11:22:33:44:55:66",
+        )
+        valid_rate = MagicMock(
+            rx_rate="125.5",
+            tx_rate=b"130.5",
+            mac_address_from=mock_device.mac,
+            mac_address_to="11:22:33:44:55:66",
+        )
+        overview = MagicMock(data_rates=[invalid_rate, valid_rate])
+        mock_device.plcnet.async_get_network_overview.return_value = overview
+
+        res = probe_plc_phy("192.168.1.20")
+
+        self.assertTrue(res.reachable)
+        self.assertEqual(res.rx_rate_mbps, 125.5)
+        self.assertEqual(res.tx_rate_mbps, 130.5)
 
     @patch("devolo_plc_api.Device")
     def test_async_probe_plc_phy_device_exception(self, mock_device_cls):
         mock_device_cls.side_effect = RuntimeError("Connection timed out")
         res = probe_plc_phy("192.168.1.20")
         self.assertFalse(res.reachable)
-        self.assertIn("Connection timed out", res.error)
+        self.assertEqual(res.error, "Connection timed out")
 
 
 class PatchInterfacesTests(unittest.TestCase):
-    def test_patch_devolo_device_interfaces(self):
+    @staticmethod
+    def test_patch_devolo_device_interfaces():
         patch_devolo_device_interfaces()
         # Call again to exercise idempotent guard line
         patch_devolo_device_interfaces()

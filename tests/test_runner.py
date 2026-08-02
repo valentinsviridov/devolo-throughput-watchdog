@@ -14,7 +14,7 @@ from devolo_watchdog.models import (
     Status,
     WanIperfResult,
 )
-from devolo_watchdog.runner import collect_measurement_report, log_result, run_daemon
+from devolo_watchdog.runner import LOG, collect_measurement_report, log_result, run_daemon
 
 
 def make_settings(**kwargs) -> Settings:
@@ -36,7 +36,7 @@ def make_settings(**kwargs) -> Settings:
 
 
 class LoggingAndCollectionTests(unittest.TestCase):
-    @patch("devolo_watchdog.runner.LOG.info")
+    @patch.object(LOG, "info")
     def test_log_result_json_format(self, mock_log):
         res = CycleResult(
             status=Status.HEALTHY,
@@ -48,9 +48,26 @@ class LoggingAndCollectionTests(unittest.TestCase):
         )
         log_result(res, failures=0, fail_limit=3, action=ActionType.NONE, log_format="json")
         mock_log.assert_called_once()
-        log_str = mock_log.call_args[0][0]
+        log_str = mock_log.call_args.args[0]
         self.assertIn('"status": "healthy"', log_str)
         self.assertIn('"upload_mbps": 150.0', log_str)
+
+    @patch.object(LOG, "info")
+    def test_log_result_text_omits_unknown_ports(self, mock_log):
+        result = CycleResult(
+            status=Status.HEALTHY,
+            reason="All good",
+            upload_mbps=150.0,
+            download_mbps=120.0,
+        )
+
+        log_result(result, failures=0, fail_limit=3, action=ActionType.NONE)
+
+        log_template, *log_args = mock_log.call_args.args
+        rendered_log = log_template % tuple(log_args)
+        self.assertIn("upload=150.0Mbps", rendered_log)
+        self.assertIn("download=120.0Mbps", rendered_log)
+        self.assertNotIn("@None", rendered_log)
 
     @patch("devolo_watchdog.runner.probe_gateway")
     @patch("devolo_watchdog.runner.probe_plc_phy")

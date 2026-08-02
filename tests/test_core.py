@@ -25,10 +25,10 @@ class CoreCycleTests(unittest.TestCase):
     def test_evaluate_cycle_unreachable_gateway(self):
         st = make_settings()
 
-        def mock_ping(host, settings):
+        def mock_ping(_host, _settings):
             return False
 
-        def mock_iperf(settings, reverse):
+        def mock_iperf(_settings, _reverse):
             raise AssertionError("iperf should not be called when gateway is unreachable")
 
         res = evaluate_cycle(st, mock_ping, mock_iperf)
@@ -38,10 +38,10 @@ class CoreCycleTests(unittest.TestCase):
     def test_evaluate_cycle_success(self):
         st = make_settings()
 
-        def mock_ping(host, settings):
+        def mock_ping(_host, _settings):
             return True
 
-        def mock_iperf(settings, reverse):
+        def mock_iperf(_settings, reverse):
             if reverse:
                 return IperfSample(150.0, 5202)
             return IperfSample(120.0, 5201)
@@ -54,17 +54,17 @@ class CoreCycleTests(unittest.TestCase):
     def test_evaluate_cycle_iperf_exceptions_handled(self):
         st = make_settings()
 
-        def mock_ping(host, settings):
+        def mock_ping(_host, _settings):
             return True
 
-        def mock_iperf_unavailable(settings, reverse):
+        def mock_iperf_unavailable(_settings, _reverse):
             raise IperfUnavailable("all ports failed")
 
         res1 = evaluate_cycle(st, mock_ping, mock_iperf_unavailable)
         self.assertEqual(res1.status, Status.UNAVAILABLE)
         self.assertIn("all ports failed", res1.reason)
 
-        def mock_iperf_timeout(settings, reverse):
+        def mock_iperf_timeout(_settings, _reverse):
             raise IperfThroughputTimeout("transfer timed out")
 
         res2 = evaluate_cycle(st, mock_ping, mock_iperf_timeout)

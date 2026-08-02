@@ -25,6 +25,7 @@ def _atomic_write_json(path: Path, data: dict) -> None:
             json.dump(data, temporary_file, indent=2)
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
+        assert temporary_path is not None
         os.replace(temporary_path, path)
     except Exception:
         if temporary_path is not None:

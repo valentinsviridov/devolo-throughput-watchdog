@@ -10,7 +10,6 @@ import math
 import os
 import sys
 import time
-from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -37,26 +36,16 @@ def _positive_float(value: str) -> float:
     return parsed
 
 
-class WatchdogArgumentParser(argparse.ArgumentParser):
-    """Custom ArgumentParser ensuring top-level flags like --json persist across subparsers."""
-
-    def parse_args(  # type: ignore[override]
-        self,
-        args: Sequence[str] | None = None,
-        namespace: argparse.Namespace | None = None,
-    ) -> argparse.Namespace:
-        args_list = list(sys.argv[1:] if args is None else args)
-        parsed = super().parse_args(args, namespace)
-        if "--json" in args_list:
-            parsed.json = True
-        return parsed
-
-
 def build_parser() -> argparse.ArgumentParser:
-    common_parser = WatchdogArgumentParser(add_help=False)
-    common_parser.add_argument("--json", action="store_true", help="output results in JSON format")
+    common_parser = argparse.ArgumentParser(add_help=False)
+    common_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="output results in JSON format",
+    )
 
-    parser = WatchdogArgumentParser(
+    parser = argparse.ArgumentParser(
         prog="devolo-watchdog",
         description="Watchdog for devolo Magic 2 LAN adapters via iperf3 throughput probing.",
         parents=[common_parser],
@@ -140,8 +129,8 @@ def run_doctor(
     """Perform diagnostic checks on runtime environment and devolo device."""
     results: list[dict[str, Any]] = []
 
-    def record(name: str, passed: bool, detail: str) -> None:
-        results.append({"check": name, "passed": passed, "detail": detail})
+    def record(name: str, passed: bool, message: str) -> None:
+        results.append({"check": name, "passed": passed, "detail": message})
 
     # Python version
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
@@ -341,10 +330,12 @@ def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> 
             up_samples.append(res.upload_mbps)
             down_samples.append(res.download_mbps)
 
+        upload = f"{res.upload_mbps:.1f}" if res.upload_mbps is not None else "unavailable"
+        download = f"{res.download_mbps:.1f}" if res.download_mbps is not None else "unavailable"
         err_detail = f" (error: {res.error})" if res.error else ""
         print(
-            f"Sample {i + 1}/{samples_count}: upload={res.upload_mbps} Mbps, "
-            f"download={res.download_mbps} Mbps{err_detail}",
+            f"Sample {i + 1}/{samples_count}: upload={upload} Mbps, "
+            f"download={download} Mbps{err_detail}",
             file=progress_stream,
         )
         if i < samples_count - 1:
@@ -526,7 +517,7 @@ def main() -> int:
     log_format = (
         "%(message)s"
         if json_output and sub in {None, "run"}
-        else ("%(asctime)s %(levelname)s %(message)s")
+        else "%(asctime)s %(levelname)s %(message)s"
     )
     logging.basicConfig(level=logging.INFO, format=log_format)
     _load_env_file_if_present()

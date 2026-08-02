@@ -7,7 +7,7 @@ import json
 import logging
 import math
 import subprocess
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from devolo_watchdog.models import (
     GatewayProbeResult,
@@ -154,18 +154,22 @@ def run_single_iperf(
         raise IperfError(f"iperf3 transfer exceeded timeout ({timeout_seconds}s)") from None
 
     if result.returncode != 0:
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
         stdout_err = ""
-        if result.stdout.strip():
+        if stdout.strip():
             try:
-                data = json.loads(result.stdout)
-                if data.get("error"):
+                data = json.loads(stdout)
+                if isinstance(data, dict) and data.get("error"):
                     stdout_err = str(data["error"])
-            except Exception:
-                stdout_err = result.stdout.strip()
-        detail = result.stderr.strip() or stdout_err or f"exit {result.returncode}"
+                elif not isinstance(data, dict):
+                    stdout_err = stdout.strip()
+            except json.JSONDecodeError:
+                stdout_err = stdout.strip()
+        detail = stderr.strip() or stdout_err or f"exit {result.returncode}"
         raise IperfError(detail)
 
-    return parse_iperf_mbps(result.stdout)
+    return parse_iperf_mbps(result.stdout or "")
 
 
 def probe_iperf_direction(
@@ -196,14 +200,14 @@ def probe_wan_iperf(
     """Run WAN throughput probes for upload and download across port lists."""
     up_sample, up_err = probe_iperf_direction(settings, ports_up, reverse=False)
     if not up_sample:
-        return WanIperfResult(error=f"WAN upload test failed: {up_err}")
+        return WanIperfResult(error=f"WAN upload test failed: {up_err or 'unknown error'}")
 
     down_sample, down_err = probe_iperf_direction(settings, ports_down, reverse=True)
     if not down_sample:
         return WanIperfResult(
             upload_mbps=up_sample.mbps,
             upload_port=up_sample.port,
-            error=f"WAN download test failed: {down_err}",
+            error=f"WAN download test failed: {down_err or 'unknown error'}",
         )
 
     return WanIperfResult(
@@ -226,10 +230,14 @@ def patch_devolo_device_interfaces() -> None:
         from devolo_plc_api.device import Device
         from ifaddr import get_adapters
 
-        orig_get_relevant = Device._get_relevant_interfaces
+        interface_selector_name = "_get_relevant_interfaces"
+        orig_get_relevant = getattr(Device, interface_selector_name, None)
+        if not callable(orig_get_relevant):
+            LOG.debug("devolo Device has no interface-selection hook to patch")
+            return
 
-        async def _patched_get_relevant_interfaces(self: Device) -> list[str]:
-            interfaces = await orig_get_relevant(self)
+        async def _patched_get_relevant_interfaces(self: object) -> list[str]:
+            interfaces = cast(list[str], await orig_get_relevant(self))
             if not interfaces:
                 fallback: list[str] = []
                 for adapter in get_adapters():
@@ -239,14 +247,27 @@ def patch_devolo_device_interfaces() -> None:
                 return fallback
             return interfaces
 
-        Device._get_relevant_interfaces = _patched_get_relevant_interfaces  # type: ignore[method-assign]
+        setattr(Device, interface_selector_name, _patched_get_relevant_interfaces)
         _DEVICE_INTERFACES_PATCHED = True
     except Exception as exc:
         LOG.debug("Unable to install devolo interface fallback: %s", exc)
 
 
 def _normalize_mac(value: object) -> str:
-    return "".join(character for character in str(value).lower() if character.isalnum())
+    if not isinstance(value, str):
+        return ""
+    return "".join(character for character in value.lower() if character.isalnum())
+
+
+def _coerce_positive_rate(value: object) -> float | None:
+    """Convert supported PLC rate values while rejecting invalid or non-finite telemetry."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, bytes)):
+        return None
+    try:
+        rate = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return rate if math.isfinite(rate) and rate > 0 else None
 
 
 def _rates_for_device(data_rates: list[object], device_mac: object) -> list[object]:
@@ -280,27 +301,30 @@ async def async_probe_plc_phy(devolo_ip: str, password: str | None = None) -> Pl
         if password:
             device.password = password
         async with device:
-            plc_api = getattr(device, "plcnet", getattr(device, "plc", None))
+            plc_api = getattr(device, "plcnet", None)
+            if plc_api is None:
+                plc_api = getattr(device, "plc", None)
             if plc_api is None:
                 return PlcPhyResult(reachable=True, error="PLC API not supported by device")
 
-            overview = await plc_api.async_get_network_overview()
+            get_overview = getattr(plc_api, "async_get_network_overview", None)
+            if not callable(get_overview):
+                return PlcPhyResult(reachable=True, error="PLC network overview is not supported")
+            overview = await get_overview()
             rx_rates: list[float] = []
             tx_rates: list[float] = []
 
-            data_rates = list(getattr(overview, "data_rates", []))
+            data_rates = list(getattr(overview, "data_rates", []) or [])
             data_items = (
                 _rates_for_device(data_rates, getattr(device, "mac", ""))
                 if data_rates
                 else list(getattr(overview, "devices", []))
             )
             for item in data_items:
-                rx = getattr(item, "rx_rate", None)
-                tx = getattr(item, "tx_rate", None)
-                if rx is not None and float(rx) > 0:
-                    rx_rates.append(float(rx))
-                if tx is not None and float(tx) > 0:
-                    tx_rates.append(float(tx))
+                if (rx := _coerce_positive_rate(getattr(item, "rx_rate", None))) is not None:
+                    rx_rates.append(rx)
+                if (tx := _coerce_positive_rate(getattr(item, "tx_rate", None))) is not None:
+                    tx_rates.append(tx)
 
             min_rx = min(rx_rates) if rx_rates else None
             min_tx = min(tx_rates) if tx_rates else None

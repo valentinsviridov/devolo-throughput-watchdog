@@ -97,7 +97,7 @@ def _wan_result(wan: WanIperfResult, phy_healthy: bool | None, settings: Setting
     if phy_healthy:
         return _cycle_with_wan(
             Status.UNAVAILABLE,
-            (f"iperf degraded ({low_description}), but local PLC link is verified healthy"),
+            f"iperf degraded ({low_description}), but local PLC link is verified healthy",
             wan,
         )
     if settings.require_plc_evidence_for_reboot:

@@ -33,7 +33,7 @@ class LegacyNetworkTests(unittest.TestCase):
     def test_run_iperf_with_custom_single_fn_success(self):
         st = make_settings()
 
-        def custom_fn(settings, reverse, port):
+        def custom_fn(_settings, _reverse, port):
             if port == 5202:
                 return 150.0
             raise RuntimeError("port 5201 offline")
@@ -44,7 +44,7 @@ class LegacyNetworkTests(unittest.TestCase):
     def test_run_iperf_with_custom_single_fn_all_failed_raises_iperf_unavailable(self):
         st = make_settings()
 
-        def broken_fn(settings, reverse, port):
+        def broken_fn(_settings, _reverse, port):
             raise RuntimeError(f"port {port} failed")
 
         with self.assertRaises(IperfUnavailable) as cm:

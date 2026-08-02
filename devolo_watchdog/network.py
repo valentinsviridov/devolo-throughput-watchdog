@@ -53,7 +53,7 @@ def run_iperf(
     if sample is not None:
         return sample
 
-    raise IperfUnavailable(f"public iperf test failed: {error}")
+    raise IperfUnavailable(f"public iperf test failed: {error or 'unknown error'}")
 
 
 __all__ = ["ping", "run_iperf", "run_single_iperf", "parse_iperf_mbps", "IperfError"]

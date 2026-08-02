@@ -56,10 +56,13 @@ def log_result(
         LOG.info(json.dumps(data))
         return
 
+    upload = result.upload_mbps
+    download = result.download_mbps
+    upload_port = f"@{result.upload_port}" if result.upload_port is not None else ""
+    download_port = f"@{result.download_port}" if result.download_port is not None else ""
     values = (
-        f" upload={result.upload_mbps:.1f}Mbps@{result.upload_port}"
-        f" download={result.download_mbps:.1f}Mbps@{result.download_port}"
-        if result.upload_mbps is not None and result.download_mbps is not None
+        f" upload={upload:.1f}Mbps{upload_port} download={download:.1f}Mbps{download_port}"
+        if upload is not None and download is not None
         else ""
     )
     LOG.info(
@@ -122,6 +125,7 @@ def _execute_reboot(
         )
         return
 
+    # noinspection PyBroadException
     try:
         success = restart_devolo(settings)
         if not success:
@@ -163,7 +167,7 @@ def _execute_reboot(
                 verify_result.reason,
             )
         store.save(state)
-    except Exception:
+    except Exception:  # Keep unexpected device/API failures from terminating the daemon.
         LOG.exception("action=reboot device=%s result=error", settings.devolo_ip)
 
 
