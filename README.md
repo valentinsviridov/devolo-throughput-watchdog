@@ -220,6 +220,31 @@ iperf3 server. Host networking is required for local discovery and is a Linux-sp
 Start with `DW_ACTION=log`. A reboot interrupts traffic through the adapter, so enable `reboot` only after `doctor`,
 `discover`, and calibration produce sensible results.
 
+### Pre-built Container Images
+
+CI publishes multi-platform images for `linux/amd64` and `linux/arm64` to the
+[GitHub Container Registry](https://github.com/valentinsviridov/devolo-throughput-watchdog/pkgs/container/devolo-throughput-watchdog):
+
+```text
+ghcr.io/valentinsviridov/devolo-throughput-watchdog:latest
+```
+
+Pull the current default-branch image with:
+
+```bash
+docker pull ghcr.io/valentinsviridov/devolo-throughput-watchdog:latest
+```
+
+Public GHCR packages can be pulled anonymously. If package access is restricted, authenticate to `ghcr.io` with a
+token carrying `read:packages` before pulling.
+
+Commit-specific images are also published as `sha-<short-commit>`. The supplied `compose.yaml` builds from the local
+source by default. To use the registry image instead, replace `build: .` in that file with:
+
+```yaml
+image: ghcr.io/valentinsviridov/devolo-throughput-watchdog:latest
+```
+
 ### 1. Environment Setup
 
 Copy example environment configuration:
