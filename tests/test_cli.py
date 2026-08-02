@@ -15,8 +15,11 @@ from devolo_watchdog.__main__ import (
     run_calibrate,
     run_discover,
     run_doctor,
+    run_restart,
 )
+from devolo_watchdog.actions import ActionDependencyError
 from devolo_watchdog.config import Settings
+from devolo_watchdog.runner import RestartPersistenceError
 
 
 def make_settings(**kwargs) -> Settings:
@@ -64,6 +67,12 @@ class CliParserTests(unittest.TestCase):
         parser = build_parser()
         args = parser.parse_args(["healthcheck"])
         self.assertEqual(args.subcommand, "healthcheck")
+
+    def test_restart_subcommand_parsing(self):
+        parser = build_parser()
+        args = parser.parse_args(["restart", "--json"])
+        self.assertEqual(args.subcommand, "restart")
+        self.assertTrue(args.json)
 
     @patch("devolo_watchdog.__main__.probe_gateway")
     def test_check_config_main_execution(self, mock_ping):
@@ -264,6 +273,99 @@ class CliParserTests(unittest.TestCase):
         with patch("sys.stderr"):
             code = run_discover(st, json_output=False)
         self.assertEqual(code, 3)
+
+    @patch("devolo_watchdog.__main__.time.time", return_value=123.0)
+    @patch("devolo_watchdog.__main__.request_restart", return_value=True)
+    def test_run_restart_uses_shared_restart_path(self, mock_restart, mock_time):
+        settings = make_settings(action="log")
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            code = run_restart(settings, json_output=False)
+
+        self.assertEqual(code, 0)
+        self.assertIn("Restart request accepted", stdout.getvalue())
+        mock_restart.assert_called_once()
+        self.assertIs(mock_restart.call_args.args[0], settings)
+        self.assertEqual(mock_restart.call_args.kwargs["now"], 123.0)
+        self.assertEqual(mock_restart.call_args.kwargs["reason"], "manual restart command")
+        mock_time.assert_called_once_with()
+
+    @patch("devolo_watchdog.__main__.request_restart", return_value=False)
+    def test_run_restart_rejected_json(self, mock_restart):
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            code = run_restart(make_settings(), json_output=True)
+
+        self.assertEqual(code, 1)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["status"], "rejected")
+        self.assertEqual(payload["action"], "restart")
+        self.assertEqual(payload["device"], "192.168.1.20")
+        mock_restart.assert_called_once()
+
+    @patch(
+        "devolo_watchdog.__main__.request_restart",
+        side_effect=RuntimeError("device unreachable"),
+    )
+    def test_run_restart_failure_json(self, mock_restart):
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            code = run_restart(make_settings(), json_output=True)
+
+        self.assertEqual(code, 2)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("device unreachable", payload["detail"])
+        mock_restart.assert_called_once()
+
+    @patch(
+        "devolo_watchdog.__main__.request_restart",
+        side_effect=ActionDependencyError("devolo_plc_api library is not installed"),
+    )
+    def test_run_restart_missing_dependency_is_misconfigured(self, mock_restart):
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            code = run_restart(make_settings(), json_output=True)
+
+        self.assertEqual(code, 3)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["status"], "error")
+        self.assertIn("Restart unavailable", payload["detail"])
+        mock_restart.assert_called_once()
+
+    @patch(
+        "devolo_watchdog.__main__.request_restart",
+        side_effect=RestartPersistenceError("restart attempt could not be persisted"),
+    )
+    def test_run_restart_skips_action_when_state_cannot_be_persisted(self, mock_restart):
+        stderr = io.StringIO()
+
+        with redirect_stderr(stderr):
+            code = run_restart(make_settings(), json_output=False)
+
+        self.assertEqual(code, 2)
+        self.assertIn("Restart skipped", stderr.getvalue())
+        mock_restart.assert_called_once()
+
+    @patch("devolo_watchdog.__main__.run_restart", return_value=0)
+    def test_main_dispatches_restart(self, mock_restart):
+        env = {
+            "DW_REMOTE_PROBE": "192.168.1.1",
+            "DW_DEVOLO_IP": "192.168.1.20",
+            "DW_MIN_UPLOAD_MBPS": "100",
+            "DW_MIN_DOWNLOAD_MBPS": "100",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with patch("sys.argv", ["devolo-watchdog", "restart"]):
+                self.assertEqual(main(), 0)
+
+        settings = mock_restart.call_args.args[0]
+        self.assertEqual(settings.devolo_ip, "192.168.1.20")
+        self.assertFalse(mock_restart.call_args.args[1])
 
     def test_env_loader_parses_file(self):
         with tempfile.NamedTemporaryFile("w+", delete=False, dir=".") as tf:

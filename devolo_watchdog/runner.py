@@ -28,6 +28,34 @@ from devolo_watchdog.state import StateStore, write_heartbeat
 LOG = logging.getLogger("devolo-throughput-watchdog")
 
 
+class RestartPersistenceError(RuntimeError):
+    """A restart was skipped because its attempt could not be persisted safely."""
+
+
+def request_restart(
+    settings: Settings,
+    store: StateStore,
+    state: WatchdogState,
+    *,
+    now: float,
+    reason: str,
+) -> bool:
+    """Record and issue one restart request through the shared hardware adapter."""
+    state.record_reboot(now, accepted=False, reason=reason)
+    if not store.save(state):
+        raise RestartPersistenceError("restart attempt could not be persisted")
+
+    accepted = restart_devolo(settings)
+    if accepted:
+        state.reboot_history[-1].accepted = True
+        if not store.save(state):
+            LOG.error(
+                "action=reboot device=%s result=accepted state_update=failed",
+                settings.devolo_ip,
+            )
+    return accepted
+
+
 def log_result(
     result: CycleResult,
     failures: int,
@@ -117,23 +145,19 @@ def _execute_reboot(
     action_reason: str,
 ) -> None:
     """Persist, execute, and verify one reboot attempt."""
-    state.record_reboot(now, accepted=False, reason=result.reason)
-    if not store.save(state):
-        LOG.critical(
-            "action=reboot device=%s result=skipped reason=state-persistence-failed",
-            settings.devolo_ip,
-        )
-        return
-
     # noinspection PyBroadException
     try:
-        success = restart_devolo(settings)
+        success = request_restart(
+            settings,
+            store,
+            state,
+            now=now,
+            reason=result.reason,
+        )
         if not success:
             LOG.error("action=reboot device=%s result=rejected", settings.devolo_ip)
             return
 
-        state.reboot_history[-1].accepted = True
-        store.save(state)
         LOG.warning(
             "action=reboot device=%s result=accepted reason=%s",
             settings.devolo_ip,
@@ -167,6 +191,11 @@ def _execute_reboot(
                 verify_result.reason,
             )
         store.save(state)
+    except RestartPersistenceError:
+        LOG.critical(
+            "action=reboot device=%s result=skipped reason=state-persistence-failed",
+            settings.devolo_ip,
+        )
     except Exception:  # Keep unexpected device/API failures from terminating the daemon.
         LOG.exception("action=reboot device=%s result=error", settings.devolo_ip)
 

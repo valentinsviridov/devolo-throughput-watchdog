@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from devolo_watchdog.config import Settings
 from devolo_watchdog.models import (
@@ -13,8 +13,17 @@ from devolo_watchdog.models import (
     MeasurementReport,
     Status,
     WanIperfResult,
+    WatchdogState,
 )
-from devolo_watchdog.runner import LOG, collect_measurement_report, log_result, run_daemon
+from devolo_watchdog.runner import (
+    LOG,
+    RestartPersistenceError,
+    collect_measurement_report,
+    log_result,
+    request_restart,
+    run_daemon,
+)
+from devolo_watchdog.state import StateStore
 
 
 def make_settings(**kwargs) -> Settings:
@@ -114,6 +123,69 @@ class LoggingAndCollectionTests(unittest.TestCase):
         mock_plc.assert_not_called()
 
 
+class RestartRequestTests(unittest.TestCase):
+    @patch("devolo_watchdog.runner.restart_devolo", return_value=True)
+    def test_accepted_restart_is_recorded_before_and_after_api_call(self, mock_restart):
+        settings = make_settings()
+        store = MagicMock(spec=StateStore)
+        store.save.return_value = True
+        state = WatchdogState()
+
+        accepted = request_restart(
+            settings,
+            store,
+            state,
+            now=123.0,
+            reason="manual restart command",
+        )
+
+        self.assertTrue(accepted)
+        mock_restart.assert_called_once_with(settings)
+        self.assertEqual(store.save.call_count, 2)
+        self.assertEqual(len(state.reboot_history), 1)
+        self.assertEqual(state.reboot_history[0].timestamp, 123.0)
+        self.assertEqual(state.reboot_history[0].reason, "manual restart command")
+        self.assertTrue(state.reboot_history[0].accepted)
+
+    @patch("devolo_watchdog.runner.restart_devolo")
+    def test_restart_is_skipped_when_attempt_cannot_be_recorded(self, mock_restart):
+        store = MagicMock(spec=StateStore)
+        store.save.return_value = False
+        state = WatchdogState()
+
+        with self.assertRaisesRegex(RestartPersistenceError, "could not be persisted"):
+            request_restart(
+                make_settings(),
+                store,
+                state,
+                now=123.0,
+                reason="manual restart command",
+            )
+
+        mock_restart.assert_not_called()
+        self.assertEqual(len(state.reboot_history), 1)
+        self.assertFalse(state.reboot_history[0].accepted)
+
+    @patch("devolo_watchdog.runner.restart_devolo", side_effect=RuntimeError("API failed"))
+    def test_failed_api_call_remains_counted(self, mock_restart):
+        store = MagicMock(spec=StateStore)
+        store.save.return_value = True
+        state = WatchdogState()
+
+        with self.assertRaisesRegex(RuntimeError, "API failed"):
+            request_restart(
+                make_settings(),
+                store,
+                state,
+                now=123.0,
+                reason="manual restart command",
+            )
+
+        mock_restart.assert_called_once()
+        store.save.assert_called_once_with(state)
+        self.assertFalse(state.reboot_history[0].accepted)
+
+
 class DaemonExecutionTests(unittest.TestCase):
     @patch("devolo_watchdog.runner.collect_measurement_report")
     def test_run_daemon_once_healthy(self, mock_collect):
@@ -158,6 +230,22 @@ class DaemonExecutionTests(unittest.TestCase):
         exit_code = run_daemon(cfg, once=True, allow_action=True)
         self.assertEqual(exit_code, 1)
         mock_reboot.assert_called_once_with(cfg)
+
+    @patch("devolo_watchdog.runner.request_restart", return_value=False)
+    @patch("devolo_watchdog.runner.collect_measurement_report")
+    def test_automated_reboot_uses_shared_restart_path(self, mock_collect, mock_restart):
+        mock_collect.return_value = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            wan_iperf=WanIperfResult(upload_mbps=10.0, download_mbps=10.0),
+        )
+        settings = make_settings()
+
+        exit_code = run_daemon(settings, once=True, allow_action=True)
+
+        self.assertEqual(exit_code, 1)
+        mock_restart.assert_called_once()
+        self.assertIs(mock_restart.call_args.args[0], settings)
+        self.assertIn("upload 10.0", mock_restart.call_args.kwargs["reason"])
 
     @patch("devolo_watchdog.runner.restart_devolo")
     @patch("devolo_watchdog.runner.collect_measurement_report")

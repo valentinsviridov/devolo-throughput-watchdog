@@ -154,12 +154,14 @@ stateDiagram-v2
   If a configured state file cannot be written, the reboot is skipped rather than bypassing the rate limit.
 - **Safe `--once` Execution**: One-shot CLI execution defaults to dry-run mode. Hardware reboot actions require explicit
   `--allow-action`.
+- **On-Demand Restart Test**: The `restart` command exercises the same persisted management-API action path used by
+  automated recovery, independently of throughput policy and `DW_ACTION`.
 - **Atomic State Persistence**: State is saved to `/var/lib/devolo-watchdog/state.json` via temporary file writing and
   atomic file replacement (`os.replace`).
 - **Container Heartbeat & Healthcheck**: Updates `/tmp/watchdog_heartbeat` before each cycle. Freshness defaults to
   twice the configured cycle interval (minimum 90 seconds), so the default 10-minute interval remains healthy.
-- **Diagnostic Tooling**: Subcommands for `doctor` (system diagnostics), `discover` (PLC topology & speeds), `calibrate`
-  (baseline speed measurements & threshold recommendations), and `run`.
+- **Diagnostic Tooling**: Subcommands for `doctor` (system diagnostics), `discover` (PLC topology & speeds), `restart`
+  (explicit hardware action test), `calibrate` (baseline speed measurements & threshold recommendations), and `run`.
 
 ---
 
@@ -285,6 +287,35 @@ uv run devolo-watchdog calibrate --samples 5
 uv run devolo-watchdog --json calibrate --samples 5
 ```
 
+### On-Demand Device Restart (`restart`)
+
+Immediately sends a restart request to `DW_DEVOLO_IP` through the same state-accounted management API path used by
+automated recovery:
+
+```bash
+uv run devolo-watchdog restart
+# Machine-readable result
+uv run devolo-watchdog --json restart
+```
+
+Running this command is explicit authorization to interrupt traffic through the configured adapter. It deliberately
+bypasses throughput checks, `DW_ACTION`, failure thresholds, and the circuit-breaker decision so an operator can test
+the hardware integration. The attempt is still recorded before the API call and counts toward the moving-window history
+when `DW_STATE_FILE` is configured. If that configured state cannot be written, the restart is skipped.
+
+An `accepted` result means the device management API accepted the same restart request automation uses; it does not mean
+the device has completed rebooting or passed a post-restart throughput check. Run `doctor` first, and avoid issuing the
+command while users depend on the PLC link.
+
+For the supplied Compose deployment, stop the daemon first to avoid concurrent state updates, run the one-off command
+against the same configuration and state volume, then start it again:
+
+```bash
+docker compose stop devolo-watchdog
+docker compose run --rm devolo-watchdog restart
+docker compose up -d
+```
+
 ### Daemon / Single Check (`run`)
 
 ```bash
@@ -322,9 +353,9 @@ variables already present in the process environment.
 
 | Command/result                                                            | Exit code |
 |---------------------------------------------------------------------------|-----------|
-| Healthy check or successful diagnostic                                    | `0`       |
-| Degraded one-shot check, failed calibration, or stale heartbeat           | `1`       |
-| Measurement unavailable, discovery failure, or reachability check failure | `2`       |
+| Healthy check, successful diagnostic, or accepted restart request         | `0`       |
+| Degraded check, failed calibration, stale heartbeat, or rejected restart  | `1`       |
+| Measurement unavailable, discovery/reachability failure, or restart error | `2`       |
 | Invalid configuration or missing runtime dependency                       | `3`       |
 
 ---

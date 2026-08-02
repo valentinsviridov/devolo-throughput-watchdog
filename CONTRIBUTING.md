@@ -32,8 +32,12 @@ Changes must preserve these rules:
 1. `run --once` never reboots hardware unless `--allow-action` is present.
 2. Low WAN throughput cannot trigger a reboot without PLC evidence unless the operator explicitly sets `DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT=false`.
 3. A reboot attempt is recorded before the management API is called. If a configured state file cannot be written, the action is skipped.
-4. Every management API call—accepted, rejected, or failed—counts toward the moving-window limit.
+4. Every automated or on-demand management API call—accepted, rejected, or failed—counts toward the moving-window limit.
 5. Invalid configuration must fail closed with exit code 3.
+
+The `restart` command and automated recovery must both use `runner.request_restart`; new orchestration must not call the
+lower-level `actions.restart_devolo` adapter directly. The manual command intentionally bypasses policy decisions, but
+not pre-attempt persistence.
 
 Add a regression test whenever one of these rules or an external command/API adapter changes.
 

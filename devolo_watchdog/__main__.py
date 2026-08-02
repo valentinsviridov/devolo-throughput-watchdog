@@ -13,11 +13,11 @@ import time
 from dataclasses import replace
 from typing import Any
 
-from devolo_watchdog.actions import read_password
+from devolo_watchdog.actions import ActionDependencyError, read_password
 from devolo_watchdog.config import Settings, heartbeat_max_age_seconds_from_env
 from devolo_watchdog.probes import probe_gateway
-from devolo_watchdog.runner import run_daemon
-from devolo_watchdog.state import check_heartbeat
+from devolo_watchdog.runner import RestartPersistenceError, request_restart, run_daemon
+from devolo_watchdog.state import StateStore, check_heartbeat
 
 LOG = logging.getLogger("devolo-throughput-watchdog")
 
@@ -77,6 +77,13 @@ def build_parser() -> argparse.ArgumentParser:
     # discover
     subparsers.add_parser(
         "discover", parents=[common_parser], help="discover devolo PLC network topology"
+    )
+
+    # restart
+    subparsers.add_parser(
+        "restart",
+        parents=[common_parser],
+        help="immediately request a restart of the configured devolo device",
     )
 
     # calibrate
@@ -303,6 +310,65 @@ def run_discover(settings: Settings, json_output: bool) -> int:
     return 0
 
 
+def _render_restart_result(
+    settings: Settings,
+    json_output: bool,
+    *,
+    status: str,
+    detail: str,
+) -> None:
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "status": status,
+                    "action": "restart",
+                    "device": settings.devolo_ip,
+                    "detail": detail,
+                }
+            )
+        )
+        return
+
+    stream = sys.stdout if status == "accepted" else sys.stderr
+    print(detail, file=stream)
+
+
+def run_restart(settings: Settings, json_output: bool) -> int:
+    """Issue an operator-requested restart through the automated action path."""
+    store = StateStore(settings.state_file)
+    state = store.load()
+    try:
+        accepted = request_restart(
+            settings,
+            store,
+            state,
+            now=time.time(),
+            reason="manual restart command",
+        )
+    except RestartPersistenceError as exc:
+        detail = f"Restart skipped for devolo device {settings.devolo_ip}: {exc}"
+        _render_restart_result(settings, json_output, status="error", detail=detail)
+        return 2
+    except (ActionDependencyError, ValueError) as exc:
+        detail = f"Restart unavailable for devolo device {settings.devolo_ip}: {exc}"
+        _render_restart_result(settings, json_output, status="error", detail=detail)
+        return 3
+    except Exception as exc:
+        detail = f"Restart failed for devolo device {settings.devolo_ip}: {exc}"
+        _render_restart_result(settings, json_output, status="error", detail=detail)
+        return 2
+
+    if accepted:
+        detail = f"Restart request accepted for devolo device {settings.devolo_ip}."
+        _render_restart_result(settings, json_output, status="accepted", detail=detail)
+        return 0
+
+    detail = f"Restart request rejected by devolo device {settings.devolo_ip}."
+    _render_restart_result(settings, json_output, status="rejected", detail=detail)
+    return 1
+
+
 def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> int:
     """Perform no-action throughput probing and recommend upload/download thresholds."""
     if samples_count <= 0:
@@ -506,13 +572,36 @@ def _run_configuration_check(settings: Settings, json_output: bool) -> int:
     return 0 if data["status"] == "ok" else 2
 
 
+def _run_configured_command(
+    args: argparse.Namespace,
+    settings: Settings,
+    json_output: bool,
+) -> int:
+    sub = args.subcommand
+    if json_output and sub in {None, "run"}:
+        settings = replace(settings, log_format="json")
+
+    if getattr(args, "check_config", False):
+        return _run_configuration_check(settings, json_output)
+    if sub == "doctor":
+        return run_doctor(settings, json_output)
+    if sub == "discover":
+        return run_discover(settings, json_output)
+    if sub == "restart":
+        return run_restart(settings, json_output)
+    if sub == "calibrate":
+        return run_calibrate(settings, getattr(args, "samples", 3), json_output)
+
+    return run_daemon(
+        settings,
+        once=getattr(args, "once", False),
+        allow_action=getattr(args, "allow_action", False),
+    )
+
+
 def main() -> int:
     args = build_parser().parse_args()
-
     sub = args.subcommand
-    once = getattr(args, "once", False)
-    allow_action = getattr(args, "allow_action", False)
-    check_config = getattr(args, "check_config", False)
     json_output = getattr(args, "json", False)
     log_format = (
         "%(message)s"
@@ -536,21 +625,7 @@ def main() -> int:
             LOG.error("configuration error: %s", exc)
         return 3
 
-    if json_output and sub in {None, "run"}:
-        settings = replace(settings, log_format="json")
-
-    if check_config:
-        return _run_configuration_check(settings, json_output)
-
-    if sub == "doctor":
-        return run_doctor(settings, json_output)
-    elif sub == "discover":
-        return run_discover(settings, json_output)
-    elif sub == "calibrate":
-        samples = getattr(args, "samples", 3)
-        return run_calibrate(settings, samples, json_output)
-
-    return run_daemon(settings, once=once, allow_action=allow_action)
+    return _run_configured_command(args, settings, json_output)
 
 
 if __name__ == "__main__":
