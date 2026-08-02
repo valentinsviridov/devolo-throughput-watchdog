@@ -313,7 +313,14 @@ uv run dev-check
 
 # Build wheel and source distribution
 uv build
+
+# Run the full local verification checklist, including the Docker build
+./scripts/verify.sh
 ```
+
+Use `./scripts/verify.sh --skip-docker` for the faster application-only checks. Add
+`--keep-artifacts` to copy the freshly verified wheel and source archive into `dist/`;
+otherwise, package artifacts are built in a temporary directory and removed afterward.
 
 ---
 
