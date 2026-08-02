@@ -21,3 +21,6 @@ ENV/
 # Local environment configuration
 devolo-throughput-watchdog.env
 *.password
+
+# Transient files
+.agent-progress.md

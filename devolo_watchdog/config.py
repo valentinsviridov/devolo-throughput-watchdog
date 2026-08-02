@@ -26,6 +26,7 @@ class Settings:
     test_bytes: str = "64M"
     iperf_tries: int = 5
     iperf_timeout_seconds: int = 30
+    iperf_connect_timeout_ms: int = 3000
     interval_seconds: int = 600
     parallel_streams: int = 1
     fail_limit: int = 3
@@ -73,6 +74,7 @@ class Settings:
             test_bytes=os.getenv("DW_TEST_BYTES", "64M").strip().upper(),
             iperf_tries=int(os.getenv("DW_IPERF_TRIES", "5")),
             iperf_timeout_seconds=int(os.getenv("DW_IPERF_TIMEOUT_SECONDS", "30")),
+            iperf_connect_timeout_ms=int(os.getenv("DW_IPERF_CONNECT_TIMEOUT_MS", "3000")),
             interval_seconds=int(os.getenv("DW_INTERVAL_SECONDS", "600")),
             parallel_streams=int(os.getenv("DW_PARALLEL_STREAMS", "1")),
             fail_limit=int(os.getenv("DW_FAIL_LIMIT", "3")),
@@ -123,6 +125,7 @@ class Settings:
         positive_ints = {
             "DW_IPERF_TRIES": self.iperf_tries,
             "DW_IPERF_TIMEOUT_SECONDS": self.iperf_timeout_seconds,
+            "DW_IPERF_CONNECT_TIMEOUT_MS": self.iperf_connect_timeout_ms,
             "DW_INTERVAL_SECONDS": self.interval_seconds,
             "DW_PARALLEL_STREAMS": self.parallel_streams,
             "DW_FAIL_LIMIT": self.fail_limit,

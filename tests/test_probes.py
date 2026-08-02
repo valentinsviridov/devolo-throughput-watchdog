@@ -45,6 +45,46 @@ class SingleIperfCommandTests(unittest.TestCase):
         self.assertIn("192.168.1.100", cmd)
         self.assertIn("--reverse", cmd)
 
+    @patch("subprocess.run")
+    def test_run_single_iperf_error_extraction(self, mock_run):
+        mock_run.return_value = MagicMock(
+            returncode=1,
+            stdout=json.dumps({"error": "error - unable to connect to server: Connection refused"}),
+            stderr="",
+        )
+        with self.assertRaises(IperfError) as cm:
+            run_single_iperf(
+                server="192.168.1.100",
+                port=5201,
+                test_bytes="64M",
+                parallel=1,
+                timeout_seconds=30,
+                reverse=False,
+            )
+        self.assertIn("Connection refused", str(cm.exception))
+
+
+class RunDirectionTests(unittest.TestCase):
+    @patch("devolo_watchdog.probes.run_single_iperf")
+    def test_run_direction_error_aggregation(self, mock_single):
+        from devolo_watchdog.probes import _run_direction
+
+        mock_single.side_effect = [
+            IperfError("connection refused"),
+            IperfError("timeout"),
+        ]
+        mock_settings = MagicMock(
+            iperf_server="iperf.example.com",
+            test_bytes="64M",
+            parallel_streams=1,
+            iperf_timeout_seconds=30,
+            iperf_connect_timeout_ms=3000,
+        )
+        sample, err = _run_direction(mock_settings, (5201, 5202), reverse=False)
+        self.assertIsNone(sample)
+        self.assertIn("port 5201: connection refused", err)
+        self.assertIn("port 5202: timeout", err)
+
 
 class ProbeGatewayTests(unittest.TestCase):
     @patch("subprocess.run")

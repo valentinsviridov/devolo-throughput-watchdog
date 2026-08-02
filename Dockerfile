@@ -16,7 +16,7 @@ WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Copy metadata and lockfile before running uv sync
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-editable --no-dev --no-cache --no-install-project
 
 # Copy application package and install project

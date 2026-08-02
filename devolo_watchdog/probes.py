@@ -153,7 +153,15 @@ def run_single_iperf(
         raise IperfError(f"iperf3 transfer exceeded timeout ({timeout_seconds}s)") from None
 
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        stdout_err = ""
+        if result.stdout.strip():
+            try:
+                data = json.loads(result.stdout)
+                if data.get("error"):
+                    stdout_err = str(data["error"])
+            except Exception:
+                stdout_err = result.stdout.strip()
+        detail = result.stderr.strip() or stdout_err or f"exit {result.returncode}"
         raise IperfError(detail)
 
     return parse_iperf_mbps(result.stdout)
@@ -173,6 +181,7 @@ def probe_local_iperf(settings: Settings) -> LocalIperfResult:
             parallel=settings.parallel_streams,
             timeout_seconds=settings.iperf_timeout_seconds,
             reverse=False,
+            connect_timeout_ms=settings.iperf_connect_timeout_ms,
         )
         down = run_single_iperf(
             server=settings.local_iperf_server,
@@ -181,6 +190,7 @@ def probe_local_iperf(settings: Settings) -> LocalIperfResult:
             parallel=settings.parallel_streams,
             timeout_seconds=settings.iperf_timeout_seconds,
             reverse=True,
+            connect_timeout_ms=settings.iperf_connect_timeout_ms,
         )
         return LocalIperfResult(upload_mbps=up, download_mbps=down, port=port)
     except IperfError as exc:
@@ -192,7 +202,7 @@ def probe_local_iperf(settings: Settings) -> LocalIperfResult:
 def _run_direction(
     settings: Settings, ports: tuple[int, ...], reverse: bool
 ) -> tuple[IperfSample | None, str | None]:
-    err: str | None = None
+    errors: list[str] = []
     for p in ports:
         try:
             rate = run_single_iperf(
@@ -202,11 +212,12 @@ def _run_direction(
                 parallel=settings.parallel_streams,
                 timeout_seconds=settings.iperf_timeout_seconds,
                 reverse=reverse,
+                connect_timeout_ms=settings.iperf_connect_timeout_ms,
             )
             return IperfSample(rate, p), None
         except IperfError as exc:
-            err = f"port {p}: {exc}"
-    return None, err
+            errors.append(f"port {p}: {exc}")
+    return None, "; ".join(errors) if errors else "no candidate ports"
 
 
 def probe_wan_iperf(
