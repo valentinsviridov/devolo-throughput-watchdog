@@ -315,3 +315,7 @@ uv run check
 | `DW_STATE_FILE` | `/var/lib/devolo-watchdog/state.json` | Persistent state JSON path |
 | `DW_HEARTBEAT_FILE` | `/tmp/watchdog_heartbeat` | Healthcheck heartbeat file path |
 | `DW_LOG_FORMAT` | `text` | Structured log output format: `text` or `json` |
+
+## License
+
+This project is licensed under the **GNU General Public License v3.0 or later (GPL-3.0-or-later)**. See the [LICENSE](file:///home/alstein/projects/devolo-throughput-watchdog/LICENSE) file for details.
