@@ -9,7 +9,6 @@ from devolo_watchdog.models import (
     CycleResult,
     GatewayProbeResult,
     IperfSample,
-    LocalIperfResult,
     MeasurementReport,
     WanIperfResult,
 )
@@ -29,35 +28,15 @@ def evaluate_cycle(
     settings: Settings,
     ping_fn: Callable[[str, Settings], bool],
     iperf_fn: Callable[[Settings, bool], IperfSample],
-    local_iperf_fn: Callable[[Settings, bool], IperfSample] | None = None,
 ) -> CycleResult:
     """Legacy/compatibility entrypoint for single cycle evaluation."""
     # 1. Ping gateway
     gw_ok = ping_fn(settings.remote_probe, settings)
     gw_res = GatewayProbeResult(reachable=gw_ok)
 
-    # 2. Local iperf
-    local_res: LocalIperfResult | None = None
-    if settings.local_iperf_server or local_iperf_fn is not None:
-        if local_iperf_fn is not None:
-            try:
-                up = local_iperf_fn(settings, False)
-                down = local_iperf_fn(settings, True)
-                local_res = LocalIperfResult(
-                    upload_mbps=up.mbps,
-                    download_mbps=down.mbps,
-                    port=up.port,
-                )
-            except Exception as exc:
-                local_res = LocalIperfResult(error=str(exc))
-        else:
-            from devolo_watchdog.probes import probe_local_iperf
-
-            local_res = probe_local_iperf(settings)
-
-    # 3. WAN iperf
+    # 2. WAN/iperf probe
     wan_res: WanIperfResult | None = None
-    if gw_ok and (local_res is None or local_res.error is None):
+    if gw_ok:
         try:
             up_sample = iperf_fn(settings, False)
             down_sample = iperf_fn(settings, True)
@@ -72,7 +51,6 @@ def evaluate_cycle(
 
     report = MeasurementReport(
         gateway=gw_res,
-        local_iperf=local_res,
         wan_iperf=wan_res,
     )
     return evaluate_report(report, settings)

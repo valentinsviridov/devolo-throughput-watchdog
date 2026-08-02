@@ -7,7 +7,6 @@ from devolo_watchdog.models import (
     ActionType,
     CycleResult,
     GatewayProbeResult,
-    LocalIperfResult,
     MeasurementReport,
     PlcPhyResult,
     Status,
@@ -59,26 +58,16 @@ class PolicyEvaluationTests(unittest.TestCase):
         self.assertEqual(res.status, Status.UNAVAILABLE)
         self.assertIn("no PLC-specific evidence", res.reason)
 
-    def test_wan_slowness_with_healthy_local_iperf_returns_unavailable(self):
+    def test_wan_slowness_with_healthy_plc_phy_returns_unavailable(self):
         st = make_settings()
         report = MeasurementReport(
             gateway=GatewayProbeResult(reachable=True),
-            local_iperf=LocalIperfResult(upload_mbps=200.0, download_mbps=200.0),
+            plc_phy=PlcPhyResult(rx_rate_mbps=200.0, tx_rate_mbps=200.0),
             wan_iperf=WanIperfResult(upload_mbps=10.0, download_mbps=10.0),
         )
         res = evaluate_report(report, st)
         self.assertEqual(res.status, Status.UNAVAILABLE)
         self.assertIn("verified healthy", res.reason)
-
-    def test_degraded_local_iperf_returns_degraded(self):
-        st = make_settings()
-        report = MeasurementReport(
-            gateway=GatewayProbeResult(reachable=True),
-            local_iperf=LocalIperfResult(upload_mbps=10.0, download_mbps=10.0),
-            wan_iperf=WanIperfResult(upload_mbps=10.0, download_mbps=10.0),
-        )
-        res = evaluate_report(report, st)
-        self.assertEqual(res.status, Status.DEGRADED)
 
     def test_degraded_plc_phy_returns_degraded(self):
         st = make_settings(min_plc_phy_rate_mbps=50.0)

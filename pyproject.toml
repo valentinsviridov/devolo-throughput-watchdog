@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "devolo-throughput-watchdog"
 version = "0.1.0"
-description = "Watchdog devolo Magic 2 LAN via public and local iperf3"
+description = "Watchdog devolo Magic 2 LAN via iperf3"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

@@ -106,19 +106,6 @@ class CliParserTests(unittest.TestCase):
             code = run_calibrate(st, samples_count=2, json_output=False)
         self.assertEqual(code, 1)
 
-    @patch("devolo_watchdog.probes.probe_local_iperf")
-    @patch("devolo_watchdog.probes.probe_wan_iperf")
-    def test_run_calibrate_local_iperf(self, mock_wan, mock_local):
-        from devolo_watchdog.models import LocalIperfResult, WanIperfResult
-
-        mock_wan.return_value = WanIperfResult(error="WAN probe unavailable")
-        mock_local.return_value = LocalIperfResult(
-            upload_mbps=200.0, download_mbps=180.0, port=5201
-        )
-        st = make_settings(local_iperf_server="192.168.1.100")
-        code = run_calibrate(st, samples_count=2, json_output=True)
-        self.assertEqual(code, 0)
-
     def test_healthcheck_execution(self):
         with tempfile.NamedTemporaryFile("w+", delete=False) as tf:
             hb_path = tf.name

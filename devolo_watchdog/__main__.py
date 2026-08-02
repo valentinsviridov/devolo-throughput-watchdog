@@ -273,12 +273,10 @@ def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> 
     """Perform no-action throughput probing and recommend upload/download thresholds."""
     print(f"Running {samples_count} calibration probes (no actions will be taken)...")
     from devolo_watchdog.config import candidate_ports
-    from devolo_watchdog.probes import probe_local_iperf, probe_wan_iperf
+    from devolo_watchdog.probes import probe_wan_iperf
 
     up_samples: list[float] = []
     down_samples: list[float] = []
-    local_up_samples: list[float] = []
-    local_down_samples: list[float] = []
 
     for i in range(samples_count):
         now = time.time()
@@ -286,26 +284,12 @@ def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> 
         ports_down = candidate_ports(settings, reverse=True, now=now)
         res = probe_wan_iperf(settings, ports_up, ports_down)
 
-        local_res = None
-        if settings.local_iperf_server:
-            local_res = probe_local_iperf(settings)
-            if local_res.upload_mbps is not None:
-                local_up_samples.append(local_res.upload_mbps)
-            if local_res.download_mbps is not None:
-                local_down_samples.append(local_res.download_mbps)
-
         if res.upload_mbps is not None:
             up_samples.append(res.upload_mbps)
         if res.download_mbps is not None:
             down_samples.append(res.download_mbps)
 
-        err_parts: list[str] = []
-        if res.error:
-            err_parts.append(f"WAN: {res.error}")
-        if local_res and local_res.error:
-            err_parts.append(f"Local: {local_res.error}")
-
-        err_detail = f" (error: {'; '.join(err_parts)})" if err_parts else ""
+        err_detail = f" (error: {res.error})" if res.error else ""
         print(
             f"Sample {i + 1}/{samples_count}: upload={res.upload_mbps} Mbps, "
             f"download={res.download_mbps} Mbps{err_detail}"
@@ -313,7 +297,7 @@ def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> 
         if i < samples_count - 1:
             time.sleep(2)
 
-    if not up_samples and not local_up_samples:
+    if not up_samples:
         print("Calibration failed: insufficient valid samples", file=sys.stderr)
         return 1
 
@@ -340,26 +324,6 @@ def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> 
         rec_thresholds["DW_MIN_UPLOAD_MBPS"] = rec_up
         rec_thresholds["DW_MIN_DOWNLOAD_MBPS"] = rec_down
 
-    if local_up_samples and local_down_samples:
-        l_up_sorted = sorted(local_up_samples)
-        l_down_sorted = sorted(local_down_samples)
-        l_idx = max(0, int(len(l_up_sorted) * 0.10))
-        l_rec_up = round(l_up_sorted[l_idx] * 0.70, 1)
-        l_rec_down = round(l_down_sorted[l_idx] * 0.70, 1)
-
-        result_data["local_upload_mbps"] = {
-            "min": min(local_up_samples),
-            "max": max(local_up_samples),
-            "avg": sum(local_up_samples) / len(local_up_samples),
-        }
-        result_data["local_download_mbps"] = {
-            "min": min(local_down_samples),
-            "max": max(local_down_samples),
-            "avg": sum(local_down_samples) / len(local_down_samples),
-        }
-        rec_thresholds["DW_LOCAL_MIN_UPLOAD_MBPS"] = l_rec_up
-        rec_thresholds["DW_LOCAL_MIN_DOWNLOAD_MBPS"] = l_rec_down
-
     result_data["recommended_thresholds"] = rec_thresholds
 
     if json_output:
@@ -376,17 +340,6 @@ def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> 
             print(
                 f"Download - Min: {min(down_samples):.1f} Mbps, "
                 f"Max: {max(down_samples):.1f} Mbps, Avg: {down_avg:.1f} Mbps"
-            )
-        if local_up_samples and local_down_samples:
-            l_up_avg = sum(local_up_samples) / len(local_up_samples)
-            l_down_avg = sum(local_down_samples) / len(local_down_samples)
-            print(
-                f"Local Upload   - Min: {min(local_up_samples):.1f} Mbps, "
-                f"Max: {max(local_up_samples):.1f} Mbps, Avg: {l_up_avg:.1f} Mbps"
-            )
-            print(
-                f"Local Download - Min: {min(local_down_samples):.1f} Mbps, "
-                f"Max: {max(local_down_samples):.1f} Mbps, Avg: {l_down_avg:.1f} Mbps"
             )
         print("\nRecommended Environment Variables:")
         for key, val in rec_thresholds.items():

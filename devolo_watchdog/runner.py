@@ -19,7 +19,6 @@ from devolo_watchdog.models import (
 from devolo_watchdog.policy import evaluate_report, transition
 from devolo_watchdog.probes import (
     probe_gateway,
-    probe_local_iperf,
     probe_plc_phy,
     probe_wan_iperf,
 )
@@ -49,8 +48,6 @@ def log_result(
                 "download_mbps": result.download_mbps,
                 "upload_port": result.upload_port,
                 "download_port": result.download_port,
-                "local_upload_mbps": result.local_upload_mbps,
-                "local_download_mbps": result.local_download_mbps,
                 "plc_rx_rate": result.plc_rx_rate,
                 "plc_tx_rate": result.plc_tx_rate,
             },
@@ -82,10 +79,7 @@ def collect_measurement_report(settings: Settings, now: float) -> MeasurementRep
         settings.remote_probe, settings.ping_count, settings.ping_timeout_seconds
     )
 
-    # 2. Local iperf probe
-    local_result = probe_local_iperf(settings) if settings.local_iperf_server else None
-
-    # 3. PLC PHY probe (optional query)
+    # 2. PLC PHY probe (optional query)
     plc_result = None
     if settings.devolo_ip:
         try:
@@ -93,14 +87,13 @@ def collect_measurement_report(settings: Settings, now: float) -> MeasurementRep
         except Exception as exc:
             LOG.debug("PLC PHY probe skipped/failed: %s", exc)
 
-    # 4. WAN iperf probe (rotated candidate ports)
+    # 3. WAN iperf probe (rotated candidate ports)
     ports_up = candidate_ports(settings, reverse=False, now=now)
     ports_down = candidate_ports(settings, reverse=True, now=now)
     wan_result = probe_wan_iperf(settings, ports_up, ports_down)
 
     return MeasurementReport(
         gateway=gw_result,
-        local_iperf=local_result,
         wan_iperf=wan_result,
         plc_phy=plc_result,
         timestamp=now,

@@ -65,8 +65,6 @@ class SettingsValidationTests(unittest.TestCase):
             "DW_DEVOLO_IP": "192.168.1.20",
             "DW_MIN_UPLOAD_MBPS": "100",
             "DW_MIN_DOWNLOAD_MBPS": "100",
-            "DW_LOCAL_IPERF_SERVER": "192.168.1.100",
-            "DW_LOCAL_IPERF_PORT": "5202",
             "DW_MAX_REBOOT_ATTEMPTS": "5",
             "DW_POST_REBOOT_DELAY_SECONDS": "60",
         }
@@ -74,8 +72,6 @@ class SettingsValidationTests(unittest.TestCase):
             cfg = Settings.from_env()
             self.assertEqual(cfg.remote_probe, "192.168.1.1")
             self.assertEqual(cfg.devolo_ip, "192.168.1.20")
-            self.assertEqual(cfg.local_iperf_server, "192.168.1.100")
-            self.assertEqual(cfg.local_iperf_port, 5202)
             self.assertEqual(cfg.max_reboot_attempts, 5)
             self.assertEqual(cfg.post_reboot_delay_seconds, 60)
 

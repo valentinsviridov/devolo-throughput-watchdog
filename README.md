@@ -1,6 +1,6 @@
-# Watchdog devolo Magic 2 LAN via Public & Local iperf3 Control
+# Watchdog devolo Magic 2 LAN via iperf3 Control
 
-The watchdog runs on a Linux host connected behind a PLC (PowerLine Communication) link and measures upload/download throughput using public and/or local iperf3 endpoints. After several consecutive degradation failures backed by PLC-specific evidence, it can automatically reboot the nearest devolo adapter via its management API.
+The watchdog runs on a Linux host connected behind a PLC (PowerLine Communication) link and measures upload/download throughput using iperf3 endpoints (`DW_IPERF_SERVER`, which can be local or remote). After several consecutive degradation failures backed by PLC-specific evidence, it can automatically reboot the nearest devolo adapter via its management API.
 
 State transitions and circuit-breaker status are persisted atomically to a JSON state file (`/var/lib/devolo-watchdog/state.json`), preventing counter resets on container or daemon restarts.
 
@@ -34,8 +34,7 @@ graph TD
         direction TD
         Gateway["Default Gateway Router<br/>(e.g., 192.168.1.1)"]
         Devolo["devolo Magic 2 LAN Adapter<br/>(e.g., 192.168.1.20)"]
-        LocalIperf["Optional Local iperf3 Server<br/>(e.g., 192.168.1.100:5201)"]
-        PublicIperf["Public iperf3 Server Pool<br/>(e.g., iperf.example.com:5201-5205)"]
+        PublicIperf["iperf3 Server Pool / Target<br/>(e.g., iperf.example.com:5201-5205)"]
     end
 
     CLI --> Runner
@@ -48,10 +47,9 @@ graph TD
     State --> HeartbeatFile
 
     Probes -- "1. ICMP Ping Probe" --> Gateway
-    Probes -- "2. Local PLC Speed Test" --> LocalIperf
-    Probes -- "3. PLC PHY Link Query" --> Devolo
-    Probes -- "4. Public WAN Throughput" --> PublicIperf
-    Actions -- "5. devolo async_restart()" --> Devolo
+    Probes -- "2. PLC PHY Link Query" --> Devolo
+    Probes -- "3. iperf3 Throughput" --> PublicIperf
+    Actions -- "4. devolo async_restart()" --> Devolo
 ```
 
 ---
@@ -60,7 +58,7 @@ graph TD
 
 ```mermaid
 graph TD
-    Start(["1. Start Measurement Cycle<br/>(runner.py)"]) --> ProbeStep["2. Execute Probes<br/>(network.py)<br/>• ICMP Ping Gateway<br/>• Optional Local Far-Side iperf3<br/>• Public WAN iperf3"]
+    Start(["1. Start Measurement Cycle<br/>(runner.py)"]) --> ProbeStep["2. Execute Probes<br/>(network.py)<br/>• ICMP Ping Gateway<br/>• PLC PHY Link Query<br/>• iperf3 Throughput Test"]
 
     ProbeStep --> EvalStep["3. Evaluate Cycle Health<br/>(core.py evaluate_cycle)<br/>• Validate math.isfinite() rates<br/>• Compare speeds vs min thresholds<br/>• Classify Status: HEALTHY, DEGRADED, UNAVAILABLE"]
 
@@ -108,8 +106,8 @@ stateDiagram-v2
         [*] --> RunProbes
         RunProbes --> CheckStatus
         CheckStatus --> Healthy: Upload/Download >= Thresholds
-        CheckStatus --> Degraded: Local PLC or PHY Rate < Threshold
-        CheckStatus --> Unavailable: Gateway Unreachable / WAN-only Slowness / Probe Error
+        CheckStatus --> Degraded: PHY Link Rate or Throughput < Thresholds
+        CheckStatus --> Unavailable: Gateway Unreachable / Slowness Without Evidence / Probe Error
         CheckStatus --> Misconfigured: System Binary Missing / Invalid Config
     }
 
@@ -142,7 +140,7 @@ stateDiagram-v2
 
 ## Features & Mechanics
 
-- **Strict Evidence Requirement**: Public WAN slowness alone will not trigger a reboot unless confirmed by local iperf degradation or low devolo PLC PHY link speeds (`DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT=true`).
+- **Strict Evidence Requirement**: Throughput slowness alone will not trigger a reboot unless confirmed by low devolo PLC PHY link speeds (`DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT=true`).
 - **Moving Window Rate Limiting**: Enforces max reboot limits over a moving time window (default 3 reboots in 6 hours).
 - **Pre-Attempt Action Accounting**: Records reboot attempt timestamps in state *before* issuing management API calls, preventing infinite retry loops on rejected requests or exceptions.
 - **Safe `--once` Execution**: One-shot CLI execution defaults to dry-run mode. Hardware reboot actions require explicit `--allow-action`.
@@ -252,33 +250,14 @@ uv run check
 
 ---
 
-## Local iperf3 Control Setup Guide
-
-When using a local control server (`DW_LOCAL_IPERF_SERVER`), note that standard `iperf3` serves one active test connection at a time.
-
-Run `iperf3` in server mode on your default gateway router or local target host:
-
-```bash
-iperf3 --server --daemon --port 5201
-```
-
-Set watchdog configuration:
-
-```ini
-DW_LOCAL_IPERF_SERVER=192.168.1.100
-DW_LOCAL_IPERF_PORT=5201
-```
-
----
-
 ## Decision Matrix
 
 | Observation | Status Result | Counter / State Effect |
 | --- | --- | --- |
 | Upload and download above thresholds | `healthy` | Failure counter reset to 0 |
-| Local PLC link or PLC PHY rate degraded | `degraded` | Failure counter incremented |
-| WAN low, but local PLC link verified healthy | `measurement-unavailable` | Failure counter reset to 0 |
-| WAN low, but no local PLC probe configured | `measurement-unavailable` | Failure counter reset to 0 |
+| PLC PHY rate degraded | `degraded` | Failure counter incremented |
+| Throughput low, but local PLC link verified healthy | `measurement-unavailable` | Failure counter reset to 0 |
+| Throughput low, but no PLC evidence configured | `measurement-unavailable` | Failure counter reset to 0 |
 | Local gateway or iperf probe unreachable | `measurement-unavailable` | Failure counter reset to 0 |
 | System binary missing / invalid config | `misconfigured` | Counter untouched |
 | Max reboot attempts reached in window | `circuit-breaker` | Reboot skipped, circuit breaker active |
@@ -289,19 +268,15 @@ DW_LOCAL_IPERF_PORT=5201
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `DW_IPERF_SERVER` | `iperf.example.com` | Public iperf3 server hostname |
-| `DW_IPERF_PORTS` | `5201-5205` | Range/list of public iperf3 candidate ports |
+| `DW_IPERF_SERVER` | `iperf.example.com` | iperf3 server hostname (local or remote) |
+| `DW_IPERF_PORTS` | `5201-5205` | Range/list of iperf3 candidate ports |
 | `DW_REMOTE_PROBE` | *Required* | Local default gateway IP address |
 | `DW_DEVOLO_IP` | *Required* | Devolo adapter IP address |
-| `DW_MIN_UPLOAD_MBPS` | *Required* | Minimum acceptable WAN upload speed |
-| `DW_MIN_DOWNLOAD_MBPS` | *Required* | Minimum acceptable WAN download speed |
-| `DW_LOCAL_MIN_UPLOAD_MBPS` | `None` | Optional separate local upload threshold |
-| `DW_LOCAL_MIN_DOWNLOAD_MBPS` | `None` | Optional separate local download threshold |
+| `DW_MIN_UPLOAD_MBPS` | *Required* | Minimum acceptable upload speed |
+| `DW_MIN_DOWNLOAD_MBPS` | *Required* | Minimum acceptable download speed |
 | `DW_ACTION` | `log` | Action mode: `log` or `reboot` |
 | `DW_FAIL_LIMIT` | `3` | Consecutive degraded cycles before triggering action |
-| `DW_LOCAL_IPERF_SERVER` | `None` | Optional local far-side iperf3 server IP |
-| `DW_LOCAL_IPERF_PORT` | `5201` | Local iperf3 server port |
-| `DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT` | `true` | Require local probe or PHY evidence before reboot |
+| `DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT` | `true` | Require PLC PHY evidence before reboot |
 | `DW_MIN_PLC_PHY_RATE_MBPS` | `50.0` | Minimum acceptable devolo PLC PHY RX/TX link rate |
 | `DW_MAX_REBOOT_ATTEMPTS` | `3` | Legacy max consecutive reboot attempts setting |
 | `DW_MAX_REBOOTS_IN_WINDOW` | `3` | Max reboots allowed within moving window |

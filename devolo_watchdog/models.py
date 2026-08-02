@@ -34,14 +34,6 @@ class GatewayProbeResult:
 
 
 @dataclass(frozen=True)
-class LocalIperfResult:
-    upload_mbps: float | None = None
-    download_mbps: float | None = None
-    port: int | None = None
-    error: str | None = None
-
-
-@dataclass(frozen=True)
 class WanIperfResult:
     upload_mbps: float | None = None
     download_mbps: float | None = None
@@ -61,7 +53,6 @@ class PlcPhyResult:
 @dataclass(frozen=True)
 class MeasurementReport:
     gateway: GatewayProbeResult
-    local_iperf: LocalIperfResult | None = None
     wan_iperf: WanIperfResult | None = None
     plc_phy: PlcPhyResult | None = None
     timestamp: float = 0.0
@@ -75,8 +66,6 @@ class CycleResult:
     download_mbps: float | None = None
     upload_port: int | None = None
     download_port: int | None = None
-    local_upload_mbps: float | None = None
-    local_download_mbps: float | None = None
     plc_rx_rate: float | None = None
     plc_tx_rate: float | None = None
 
@@ -88,8 +77,6 @@ class CycleResult:
             "download_mbps": self.download_mbps,
             "upload_port": self.upload_port,
             "download_port": self.download_port,
-            "local_upload_mbps": self.local_upload_mbps,
-            "local_download_mbps": self.local_download_mbps,
             "plc_rx_rate": self.plc_rx_rate,
             "plc_tx_rate": self.plc_tx_rate,
         }

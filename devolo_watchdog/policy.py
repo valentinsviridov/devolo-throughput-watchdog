@@ -33,61 +33,7 @@ def evaluate_report(report: MeasurementReport, settings: Settings) -> CycleResul
             reason=f"Local gateway ({settings.remote_probe}) is unreachable: {err}",
         )
 
-    # 2. Check local iperf probe if configured
-    local_healthy: bool | None = None
-    local_up: float | None = None
-    local_down: float | None = None
-
-    if report.local_iperf is not None:
-        if report.local_iperf.error:
-            if "missing" in report.local_iperf.error.lower():
-                return CycleResult(
-                    status=Status.MISCONFIGURED,
-                    reason=f"Local iperf misconfigured: {report.local_iperf.error}",
-                )
-            return CycleResult(
-                status=Status.UNAVAILABLE,
-                reason=f"Local iperf probe unavailable: {report.local_iperf.error}",
-            )
-
-        local_up = report.local_iperf.upload_mbps
-        local_down = report.local_iperf.download_mbps
-
-        min_local_up = (
-            settings.local_min_upload_mbps
-            if settings.local_min_upload_mbps is not None
-            else settings.min_upload_mbps
-        )
-        min_local_down = (
-            settings.local_min_download_mbps
-            if settings.local_min_download_mbps is not None
-            else settings.min_download_mbps
-        )
-
-        if (
-            local_up is None
-            or not math.isfinite(local_up)
-            or local_up < min_local_up
-            or local_down is None
-            or not math.isfinite(local_down)
-            or local_down < min_local_down
-        ):
-            local_healthy = False
-            up_str = f"{local_up:.1f}" if local_up is not None else "None"
-            down_str = f"{local_down:.1f}" if local_down is not None else "None"
-            return CycleResult(
-                status=Status.DEGRADED,
-                reason=(
-                    f"Local PLC throughput degraded (up={up_str} < {min_local_up:.1f}, "
-                    f"down={down_str} < {min_local_down:.1f})"
-                ),
-                local_upload_mbps=local_up,
-                local_download_mbps=local_down,
-            )
-        else:
-            local_healthy = True
-
-    # 3. Check PLC PHY rates if available
+    # 2. Check PLC PHY rates if available
     phy_healthy: bool | None = None
     if report.plc_phy is not None and report.plc_phy.reachable:
         rx = report.plc_phy.rx_rate_mbps
@@ -107,24 +53,22 @@ def evaluate_report(report: MeasurementReport, settings: Settings) -> CycleResul
             else:
                 phy_healthy = True
 
-    # 4. Check WAN iperf probe
+    # 3. Check iperf probe
     if report.wan_iperf is not None:
         if report.wan_iperf.error and (
             report.wan_iperf.upload_mbps is None or report.wan_iperf.download_mbps is None
         ):
-            if local_healthy is True or phy_healthy is True:
+            if phy_healthy is True:
                 err_msg = report.wan_iperf.error
                 return CycleResult(
                     status=Status.UNAVAILABLE,
                     reason=(
-                        f"WAN iperf test failed ({err_msg}), but local PLC link is verified healthy"
+                        f"iperf test failed ({err_msg}), but local PLC link is verified healthy"
                     ),
-                    local_upload_mbps=local_up,
-                    local_download_mbps=local_down,
                 )
             return CycleResult(
                 status=Status.UNAVAILABLE,
-                reason=f"Public WAN iperf test failed/unavailable: {report.wan_iperf.error}",
+                reason=f"iperf test failed/unavailable: {report.wan_iperf.error}",
             )
 
         up = report.wan_iperf.upload_mbps
@@ -146,19 +90,17 @@ def evaluate_report(report: MeasurementReport, settings: Settings) -> CycleResul
 
         if low_reasons:
             low_str = "; ".join(low_reasons)
-            if local_healthy is True or phy_healthy is True:
+            if phy_healthy is True:
                 return CycleResult(
                     status=Status.UNAVAILABLE,
-                    reason=f"WAN degraded ({low_str}), but local PLC link is verified healthy",
+                    reason=f"iperf degraded ({low_str}), but local PLC link is verified healthy",
                     upload_mbps=up,
                     download_mbps=down,
                     upload_port=report.wan_iperf.upload_port,
                     download_port=report.wan_iperf.download_port,
-                    local_upload_mbps=local_up,
-                    local_download_mbps=local_down,
                 )
 
-            if local_healthy is False or phy_healthy is False:
+            if phy_healthy is False:
                 return CycleResult(
                     status=Status.DEGRADED,
                     reason=f"PLC throughput degraded ({low_str})",
@@ -166,16 +108,14 @@ def evaluate_report(report: MeasurementReport, settings: Settings) -> CycleResul
                     download_mbps=down,
                     upload_port=report.wan_iperf.upload_port,
                     download_port=report.wan_iperf.download_port,
-                    local_upload_mbps=local_up,
-                    local_download_mbps=local_down,
                 )
 
-            # No local iperf or PHY evidence was performed or available
+            # No PLC PHY evidence was performed or available
             if settings.require_plc_evidence_for_reboot:
                 return CycleResult(
                     status=Status.UNAVAILABLE,
                     reason=(
-                        f"WAN throughput low ({low_str}), but no PLC-specific "
+                        f"Throughput low ({low_str}), but no PLC-specific "
                         "evidence is configured/available"
                     ),
                     upload_mbps=up,
@@ -200,12 +140,10 @@ def evaluate_report(report: MeasurementReport, settings: Settings) -> CycleResul
             download_mbps=down,
             upload_port=report.wan_iperf.upload_port,
             download_port=report.wan_iperf.download_port,
-            local_upload_mbps=local_up,
-            local_download_mbps=local_down,
         )
 
-    # Fallback if no WAN iperf was run
-    if local_healthy is True or phy_healthy is True:
+    # Fallback if no iperf was run
+    if phy_healthy is True:
         return CycleResult(status=Status.HEALTHY, reason="Local PLC link verified healthy")
 
     return CycleResult(status=Status.UNAVAILABLE, reason="No throughput tests were performed")

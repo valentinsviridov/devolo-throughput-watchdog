@@ -21,8 +21,6 @@ class Settings:
     devolo_ip: str
     min_upload_mbps: float
     min_download_mbps: float
-    local_min_upload_mbps: float | None = None
-    local_min_download_mbps: float | None = None
     test_bytes: str = "64M"
     iperf_tries: int = 5
     iperf_timeout_seconds: int = 30
@@ -36,8 +34,6 @@ class Settings:
     ping_timeout_seconds: int = 2
     password_file: str | None = None
     action: str = "log"
-    local_iperf_server: str | None = None
-    local_iperf_port: int = 5201
     max_reboot_attempts: int = 3
     post_reboot_delay_seconds: int = 45
     state_file: str | None = None
@@ -59,9 +55,6 @@ class Settings:
                 raise ValueError(f"Required environment variable {name} is missing")
             return value
 
-        local_up_raw = os.getenv("DW_LOCAL_MIN_UPLOAD_MBPS")
-        local_down_raw = os.getenv("DW_LOCAL_MIN_DOWNLOAD_MBPS")
-
         return cls(
             iperf_server=os.getenv("DW_IPERF_SERVER", "iperf.example.com").strip(),
             iperf_ports=parse_ports(os.getenv("DW_IPERF_PORTS", "5201-5205")),
@@ -69,8 +62,6 @@ class Settings:
             devolo_ip=required("DW_DEVOLO_IP"),
             min_upload_mbps=float(required("DW_MIN_UPLOAD_MBPS")),
             min_download_mbps=float(required("DW_MIN_DOWNLOAD_MBPS")),
-            local_min_upload_mbps=float(local_up_raw) if local_up_raw else None,
-            local_min_download_mbps=float(local_down_raw) if local_down_raw else None,
             test_bytes=os.getenv("DW_TEST_BYTES", "64M").strip().upper(),
             iperf_tries=int(os.getenv("DW_IPERF_TRIES", "5")),
             iperf_timeout_seconds=int(os.getenv("DW_IPERF_TIMEOUT_SECONDS", "30")),
@@ -84,8 +75,6 @@ class Settings:
             ping_timeout_seconds=int(os.getenv("DW_PING_TIMEOUT_SECONDS", "2")),
             password_file=os.getenv("DW_PASSWORD_FILE") or None,
             action=os.getenv("DW_ACTION", "log").strip().lower(),
-            local_iperf_server=os.getenv("DW_LOCAL_IPERF_SERVER") or None,
-            local_iperf_port=int(os.getenv("DW_LOCAL_IPERF_PORT", "5201")),
             max_reboot_attempts=int(os.getenv("DW_MAX_REBOOT_ATTEMPTS", "3")),
             post_reboot_delay_seconds=int(os.getenv("DW_POST_REBOOT_DELAY_SECONDS", "45")),
             state_file=os.getenv("DW_STATE_FILE") or None,
@@ -113,15 +102,6 @@ class Settings:
         if not math.isfinite(self.min_download_mbps) or self.min_download_mbps <= 0:
             raise ValueError("DW_MIN_DOWNLOAD_MBPS must be a finite number greater than zero")
 
-        if self.local_min_upload_mbps is not None and (
-            not math.isfinite(self.local_min_upload_mbps) or self.local_min_upload_mbps <= 0
-        ):
-            raise ValueError("DW_LOCAL_MIN_UPLOAD_MBPS must be greater than zero")
-        if self.local_min_download_mbps is not None and (
-            not math.isfinite(self.local_min_download_mbps) or self.local_min_download_mbps <= 0
-        ):
-            raise ValueError("DW_LOCAL_MIN_DOWNLOAD_MBPS must be greater than zero")
-
         positive_ints = {
             "DW_IPERF_TRIES": self.iperf_tries,
             "DW_IPERF_TIMEOUT_SECONDS": self.iperf_timeout_seconds,
@@ -132,7 +112,6 @@ class Settings:
             "DW_COOLDOWN_SECONDS": self.cooldown_seconds,
             "DW_PING_COUNT": self.ping_count,
             "DW_PING_TIMEOUT_SECONDS": self.ping_timeout_seconds,
-            "DW_LOCAL_IPERF_PORT": self.local_iperf_port,
             "DW_MAX_REBOOT_ATTEMPTS": self.max_reboot_attempts,
             "DW_MAX_REBOOTS_IN_WINDOW": self.max_reboots_in_window,
         }

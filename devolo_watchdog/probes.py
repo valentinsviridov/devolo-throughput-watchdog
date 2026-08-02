@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 from devolo_watchdog.models import (
     GatewayProbeResult,
     IperfSample,
-    LocalIperfResult,
     PlcPhyResult,
     WanIperfResult,
 )
@@ -165,38 +164,6 @@ def run_single_iperf(
         raise IperfError(detail)
 
     return parse_iperf_mbps(result.stdout)
-
-
-def probe_local_iperf(settings: Settings) -> LocalIperfResult:
-    """Run local iperf3 tests for upload and download if server configured."""
-    if not settings.local_iperf_server:
-        return LocalIperfResult(error="No local iperf server configured")
-
-    port = settings.local_iperf_port
-    try:
-        up = run_single_iperf(
-            server=settings.local_iperf_server,
-            port=port,
-            test_bytes=settings.test_bytes,
-            parallel=settings.parallel_streams,
-            timeout_seconds=settings.iperf_timeout_seconds,
-            reverse=False,
-            connect_timeout_ms=settings.iperf_connect_timeout_ms,
-        )
-        down = run_single_iperf(
-            server=settings.local_iperf_server,
-            port=port,
-            test_bytes=settings.test_bytes,
-            parallel=settings.parallel_streams,
-            timeout_seconds=settings.iperf_timeout_seconds,
-            reverse=True,
-            connect_timeout_ms=settings.iperf_connect_timeout_ms,
-        )
-        return LocalIperfResult(upload_mbps=up, download_mbps=down, port=port)
-    except IperfError as exc:
-        return LocalIperfResult(port=port, error=str(exc))
-    except Exception as exc:
-        return LocalIperfResult(port=port, error=f"Local iperf failed: {exc}")
 
 
 def _run_direction(

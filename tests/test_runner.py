@@ -6,7 +6,6 @@ from unittest.mock import patch
 from devolo_watchdog.config import Settings
 from devolo_watchdog.models import (
     GatewayProbeResult,
-    LocalIperfResult,
     MeasurementReport,
     WanIperfResult,
 )
@@ -25,6 +24,7 @@ def make_settings(**kwargs) -> Settings:
         "action": "reboot",
         "initial_delay_seconds": 0,
         "post_reboot_delay_seconds": 0,
+        "require_plc_evidence_for_reboot": False,
     }
     defaults.update(kwargs)
     return Settings(**defaults)
@@ -35,7 +35,6 @@ class DaemonExecutionTests(unittest.TestCase):
     def test_run_daemon_once_healthy(self, mock_collect):
         mock_collect.return_value = MeasurementReport(
             gateway=GatewayProbeResult(reachable=True),
-            local_iperf=LocalIperfResult(upload_mbps=150.0, download_mbps=150.0),
             wan_iperf=WanIperfResult(upload_mbps=150.0, download_mbps=150.0),
         )
         cfg = make_settings()
@@ -47,7 +46,6 @@ class DaemonExecutionTests(unittest.TestCase):
     def test_once_defaults_to_dry_run_without_allow_action(self, mock_collect, mock_reboot):
         mock_collect.return_value = MeasurementReport(
             gateway=GatewayProbeResult(reachable=True),
-            local_iperf=LocalIperfResult(upload_mbps=10.0, download_mbps=10.0),
             wan_iperf=WanIperfResult(upload_mbps=10.0, download_mbps=10.0),
         )
         cfg = make_settings()
@@ -60,7 +58,6 @@ class DaemonExecutionTests(unittest.TestCase):
     def test_once_triggers_reboot_when_allow_action_is_true(self, mock_collect, mock_reboot):
         mock_collect.return_value = MeasurementReport(
             gateway=GatewayProbeResult(reachable=True),
-            local_iperf=LocalIperfResult(upload_mbps=10.0, download_mbps=10.0),
             wan_iperf=WanIperfResult(upload_mbps=10.0, download_mbps=10.0),
         )
         mock_reboot.return_value = True
@@ -74,7 +71,6 @@ class DaemonExecutionTests(unittest.TestCase):
     def test_every_reboot_attempt_is_counted_even_if_call_fails(self, mock_collect, mock_reboot):
         mock_collect.return_value = MeasurementReport(
             gateway=GatewayProbeResult(reachable=True),
-            local_iperf=LocalIperfResult(upload_mbps=10.0, download_mbps=10.0),
             wan_iperf=WanIperfResult(upload_mbps=10.0, download_mbps=10.0),
         )
         mock_reboot.side_effect = RuntimeError("Device communication error")
