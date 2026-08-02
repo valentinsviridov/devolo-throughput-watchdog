@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   test:
@@ -40,9 +39,17 @@ jobs:
         run: |
           uv run dev-check
 
+      - name: Build distribution artifacts
+        if: matrix.python-version == '3.12'
+        run: |
+          uv build
+
   docker:
     name: Docker Build & Push (GHCR)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
 

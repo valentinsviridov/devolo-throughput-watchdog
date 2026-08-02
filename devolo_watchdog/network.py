@@ -10,7 +10,7 @@ from devolo_watchdog.probes import (
     IperfError,
     parse_iperf_mbps,
     probe_gateway,
-    probe_wan_iperf,
+    probe_iperf_direction,
     run_single_iperf,
 )
 
@@ -49,16 +49,11 @@ def run_iperf(
     from devolo_watchdog.core import IperfUnavailable
 
     ports_to_try = tuple(ports) if ports is not None else candidate_ports(settings, reverse)
-    if reverse:
-        res = probe_wan_iperf(settings, ports_up=(), ports_down=ports_to_try)
-        if res.download_mbps is not None and res.download_port is not None:
-            return IperfSample(res.download_mbps, res.download_port)
-    else:
-        res = probe_wan_iperf(settings, ports_up=ports_to_try, ports_down=())
-        if res.upload_mbps is not None and res.upload_port is not None:
-            return IperfSample(res.upload_mbps, res.upload_port)
+    sample, error = probe_iperf_direction(settings, ports_to_try, reverse)
+    if sample is not None:
+        return sample
 
-    raise IperfUnavailable(f"public iperf test failed: {res.error}")
+    raise IperfUnavailable(f"public iperf test failed: {error}")
 
 
 __all__ = ["ping", "run_iperf", "run_single_iperf", "parse_iperf_mbps", "IperfError"]

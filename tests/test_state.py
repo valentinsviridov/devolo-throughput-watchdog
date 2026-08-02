@@ -15,7 +15,7 @@ class StateStoreTests(unittest.TestCase):
         state = store.load()
         self.assertEqual(state.consecutive_failures, 0)
         # save should execute cleanly without error when path is None
-        store.save(state)
+        self.assertTrue(store.save(state))
 
     def test_load_non_existent_file_returns_fresh_state(self):
         store = StateStore("/tmp/non_existent_watchdog_state.json")
@@ -49,7 +49,7 @@ class StateStoreTests(unittest.TestCase):
                 last_status=Status.DEGRADED,
                 last_reason="Local link slow",
             )
-            store.save(state)
+            self.assertTrue(store.save(state))
 
             loaded = store.load()
             self.assertEqual(loaded.consecutive_failures, 3)
@@ -66,7 +66,7 @@ class StateStoreTests(unittest.TestCase):
         store = StateStore("/tmp/some_state.json")
         state = WatchdogState()
         # save should log error and not crash
-        store.save(state)
+        self.assertFalse(store.save(state))
 
     def test_atomic_write_json_cleanup_on_error(self):
         from pathlib import Path
@@ -86,6 +86,7 @@ class StateStoreTests(unittest.TestCase):
             write_heartbeat(path, now=now)
             self.assertTrue(check_heartbeat(path, max_age_seconds=30.0, now=now + 10.0))
             self.assertFalse(check_heartbeat(path, max_age_seconds=30.0, now=now + 50.0))
+            self.assertFalse(check_heartbeat(path, max_age_seconds=30.0, now=now - 1.0))
         finally:
             if os.path.exists(path):
                 os.unlink(path)

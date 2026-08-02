@@ -206,3 +206,28 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(action, ActionType.NONE)
         self.assertTrue(new_state.breaker_tripped)
         self.assertIn("Circuit breaker active", reason)
+
+    def test_circuit_breaker_rearms_after_window_expires(self):
+        st = make_settings(fail_limit=1, max_reboots_in_window=1, reboot_window_hours=6.0)
+        now = 100_000.0
+        state = WatchdogState(consecutive_failures=0, breaker_tripped=True)
+        state.record_reboot(now - (7 * 3600), accepted=True, reason="old attempt")
+
+        result = CycleResult(status=Status.DEGRADED, reason="slow")
+        new_state, action, _ = transition(state, result, st, now)
+
+        self.assertEqual(action, ActionType.REBOOT)
+        self.assertFalse(new_state.breaker_tripped)
+
+    def test_history_is_retained_for_windows_longer_than_seven_days(self):
+        st = make_settings(fail_limit=1, max_reboots_in_window=1, reboot_window_hours=240.0)
+        now = 1_000_000.0
+        state = WatchdogState()
+        state.record_reboot(now - (8 * 86400), accepted=True, reason="recent in long window")
+
+        result = CycleResult(status=Status.DEGRADED, reason="slow")
+        new_state, action, _ = transition(state, result, st, now)
+
+        self.assertEqual(action, ActionType.NONE)
+        self.assertTrue(new_state.breaker_tripped)
+        self.assertEqual(len(new_state.reboot_history), 1)

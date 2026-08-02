@@ -11,8 +11,8 @@ def _run(cmd: list[str]) -> int:
 
 
 def test() -> None:
-    """Run unit test suite using test discovery."""
-    sys.exit(_run(["unittest", "discover", "-s", "tests"]))
+    """Run the test suite with configured branch coverage."""
+    sys.exit(_run(["pytest"]))
 
 
 def lint() -> None:
@@ -34,8 +34,8 @@ def check() -> None:
     """Run linting, formatting check, type check, and unit tests."""
     lint()
 
-    print("\n=== Running Unit Tests ===")
-    sys.exit(_run(["unittest", "discover", "-s", "tests"]))
+    print("\n=== Running Tests with Coverage ===")
+    sys.exit(_run(["pytest"]))
 
 
 def reformat() -> None:

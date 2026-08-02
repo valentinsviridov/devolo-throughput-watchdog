@@ -33,6 +33,15 @@ class PasswordFileTests(unittest.TestCase):
             self.assertEqual(read_password(tf.name), "secret_pass")
         os.unlink(tf.name)
 
+    def test_empty_password_file_raises_value_error(self):
+        with tempfile.NamedTemporaryFile("w+", delete=False) as tf:
+            path = tf.name
+        try:
+            with self.assertRaisesRegex(ValueError, "is empty"):
+                read_password(path)
+        finally:
+            os.unlink(path)
+
     def test_missing_password_file_raises_value_error(self):
         with self.assertRaises(ValueError):
             read_password("/path/to/non_existent_file.password")

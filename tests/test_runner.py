@@ -65,6 +65,37 @@ class LoggingAndCollectionTests(unittest.TestCase):
         self.assertTrue(report.gateway.reachable)
         self.assertIsNone(report.plc_phy)
 
+    @patch("devolo_watchdog.runner.probe_gateway")
+    @patch("devolo_watchdog.runner.probe_plc_phy")
+    @patch("devolo_watchdog.runner.probe_wan_iperf")
+    def test_unreachable_gateway_short_circuits_expensive_probes(self, mock_wan, mock_plc, mock_gw):
+        mock_gw.return_value = GatewayProbeResult(reachable=False, error="unreachable")
+
+        report = collect_measurement_report(make_settings(), now=1000.0)
+
+        self.assertFalse(report.gateway.reachable)
+        self.assertIsNone(report.wan_iperf)
+        mock_plc.assert_not_called()
+        mock_wan.assert_not_called()
+
+    @patch("devolo_watchdog.runner.read_password")
+    @patch("devolo_watchdog.runner.probe_gateway")
+    @patch("devolo_watchdog.runner.probe_plc_phy")
+    @patch("devolo_watchdog.runner.probe_wan_iperf")
+    def test_invalid_password_file_is_not_forwarded_as_a_literal_password(
+        self, mock_wan, mock_plc, mock_gw, mock_read
+    ):
+        mock_gw.return_value = GatewayProbeResult(reachable=True)
+        mock_read.side_effect = ValueError("password file missing")
+        mock_wan.return_value = WanIperfResult(upload_mbps=120.0, download_mbps=100.0)
+
+        report = collect_measurement_report(
+            make_settings(password_file="/missing/password"), now=1000.0
+        )
+
+        self.assertIsNone(report.plc_phy)
+        mock_plc.assert_not_called()
+
 
 class DaemonExecutionTests(unittest.TestCase):
     @patch("devolo_watchdog.runner.collect_measurement_report")
@@ -153,6 +184,25 @@ class DaemonExecutionTests(unittest.TestCase):
 
         run_daemon(cfg, once=True, allow_action=True)
         mock_reboot.assert_called_once()
+
+    @patch("devolo_watchdog.runner.StateStore.save", side_effect=[True, False])
+    @patch("devolo_watchdog.runner.restart_devolo")
+    @patch("devolo_watchdog.runner.collect_measurement_report")
+    def test_reboot_is_skipped_when_attempt_cannot_be_persisted(
+        self, mock_collect, mock_reboot, mock_save
+    ):
+        mock_collect.return_value = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            wan_iperf=WanIperfResult(upload_mbps=10.0, download_mbps=10.0),
+        )
+
+        exit_code = run_daemon(
+            make_settings(state_file="/tmp/state.json"), once=True, allow_action=True
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(mock_save.call_count, 2)
+        mock_reboot.assert_not_called()
 
     @patch("devolo_watchdog.runner.write_heartbeat")
     @patch("devolo_watchdog.runner.collect_measurement_report")

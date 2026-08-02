@@ -11,4 +11,12 @@ __pycache__
 .pytest_cache
 .ruff_cache
 *.env
-*.md
+.mypy_cache
+.coverage
+htmlcov
+dist
+tests
+.github
+GEMINI.md
+CONTRIBUTING.md
+.agent-progress.md

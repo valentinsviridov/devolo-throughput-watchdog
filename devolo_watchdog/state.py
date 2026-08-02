@@ -16,21 +16,20 @@ LOG = logging.getLogger("devolo-throughput-watchdog")
 
 def _atomic_write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tf = tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False, encoding="utf-8")
+    temporary_path: Path | None = None
     try:
-        json.dump(data, tf, indent=2)
-        tf.flush()
-        os.fsync(tf.fileno())
-        tf.close()
-        os.replace(tf.name, path)
+        with tempfile.NamedTemporaryFile(
+            "w", dir=path.parent, delete=False, encoding="utf-8"
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            json.dump(data, temporary_file, indent=2)
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+        os.replace(temporary_path, path)
     except Exception:
-        try:
-            tf.close()
-        except OSError:
-            pass
-        if os.path.exists(tf.name):
+        if temporary_path is not None:
             try:
-                os.unlink(tf.name)
+                temporary_path.unlink(missing_ok=True)
             except OSError:
                 pass
         raise
@@ -53,13 +52,16 @@ class StateStore:
             LOG.warning("Failed to load state file (%s): %s. Starting fresh state.", self.path, exc)
             return WatchdogState()
 
-    def save(self, state: WatchdogState) -> None:
+    def save(self, state: WatchdogState) -> bool:
+        """Persist state and report whether the write succeeded."""
         if not self.path:
-            return
+            return True
         try:
             _atomic_write_json(self.path, state.to_dict())
+            return True
         except Exception as exc:
             LOG.error("Failed to save state file (%s): %s", self.path, exc)
+            return False
 
 
 def write_heartbeat(path: str | Path, now: float | None = None) -> None:
@@ -83,6 +85,7 @@ def check_heartbeat(
     try:
         data = json.loads(hb_path.read_text(encoding="utf-8"))
         hb_time = float(data.get("heartbeat", 0))
-        return (current_time - hb_time) <= max_age_seconds
-    except Exception:
+        age = current_time - hb_time
+        return 0 <= age <= max_age_seconds
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return False

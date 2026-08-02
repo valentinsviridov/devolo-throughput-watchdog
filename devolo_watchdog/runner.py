@@ -8,13 +8,14 @@ import signal
 import threading
 import time
 
-from devolo_watchdog.actions import restart_devolo
+from devolo_watchdog.actions import read_password, restart_devolo
 from devolo_watchdog.config import Settings, candidate_ports
 from devolo_watchdog.models import (
     ActionType,
     CycleResult,
     MeasurementReport,
     Status,
+    WatchdogState,
 )
 from devolo_watchdog.policy import evaluate_report, transition
 from devolo_watchdog.probes import (
@@ -78,12 +79,15 @@ def collect_measurement_report(settings: Settings, now: float) -> MeasurementRep
     gw_result = probe_gateway(
         settings.remote_probe, settings.ping_count, settings.ping_timeout_seconds
     )
+    if not gw_result.reachable:
+        return MeasurementReport(gateway=gw_result, timestamp=now)
 
     # 2. PLC PHY probe (optional query)
     plc_result = None
     if settings.devolo_ip:
         try:
-            plc_result = probe_plc_phy(settings.devolo_ip, settings.password_file)
+            password = read_password(settings.password_file)
+            plc_result = probe_plc_phy(settings.devolo_ip, password)
         except Exception as exc:
             LOG.debug("PLC PHY probe skipped/failed: %s", exc)
 
@@ -100,14 +104,70 @@ def collect_measurement_report(settings: Settings, now: float) -> MeasurementRep
     )
 
 
-def run_daemon(
+def _execute_reboot(
     settings: Settings,
-    once: bool = False,
-    allow_action: bool = False,
-) -> int:
-    """Run the watchdog loop or execute a single check when once=True."""
-    stop = threading.Event()
+    store: StateStore,
+    state: WatchdogState,
+    stop: threading.Event,
+    now: float,
+    result: CycleResult,
+    action_reason: str,
+) -> None:
+    """Persist, execute, and verify one reboot attempt."""
+    state.record_reboot(now, accepted=False, reason=result.reason)
+    if not store.save(state):
+        LOG.critical(
+            "action=reboot device=%s result=skipped reason=state-persistence-failed",
+            settings.devolo_ip,
+        )
+        return
 
+    try:
+        success = restart_devolo(settings)
+        if not success:
+            LOG.error("action=reboot device=%s result=rejected", settings.devolo_ip)
+            return
+
+        state.reboot_history[-1].accepted = True
+        store.save(state)
+        LOG.warning(
+            "action=reboot device=%s result=accepted reason=%s",
+            settings.devolo_ip,
+            action_reason,
+        )
+
+        if not stop.is_set() and settings.post_reboot_delay_seconds:
+            stop.wait(settings.post_reboot_delay_seconds)
+        if stop.is_set():
+            return
+
+        verify_now = time.time()
+        verify_report = collect_measurement_report(settings, verify_now)
+        verify_result = evaluate_report(verify_report, settings)
+        state.last_status = verify_result.status
+        state.last_reason = verify_result.reason
+        state.last_check_timestamp = verify_now
+
+        if verify_result.status == Status.HEALTHY:
+            LOG.info(
+                "action=reboot device=%s post_reboot_verification=success",
+                settings.devolo_ip,
+            )
+            state.consecutive_failures = 0
+            state.breaker_tripped = False
+        else:
+            LOG.warning(
+                "action=reboot device=%s post_reboot_verification=failed status=%s reason=%s",
+                settings.devolo_ip,
+                verify_result.status.value,
+                verify_result.reason,
+            )
+        store.save(state)
+    except Exception:
+        LOG.exception("action=reboot device=%s result=error", settings.devolo_ip)
+
+
+def _install_signal_handlers(stop: threading.Event) -> None:
     def handle_signal(*_: object) -> None:
         stop.set()
 
@@ -117,10 +177,55 @@ def run_daemon(
         except (ValueError, OSError):
             pass
 
+
+def _handle_action(
+    action: ActionType,
+    action_reason: str,
+    result: CycleResult,
+    settings: Settings,
+    store: StateStore,
+    state: WatchdogState,
+    stop: threading.Event,
+    now: float,
+    *,
+    once: bool,
+    allow_action: bool,
+) -> bool:
+    if action != ActionType.REBOOT:
+        return False
+    if once and not allow_action:
+        LOG.warning(
+            "action=reboot required but skipped: "
+            "--once is dry-run by default without --allow-action"
+        )
+        return True
+    _execute_reboot(settings, store, state, stop, now, result, action_reason)
+    return True
+
+
+def _once_exit_code(result: CycleResult) -> int:
+    if result.status == Status.HEALTHY:
+        return 0
+    if result.status == Status.DEGRADED:
+        return 1
+    return 2
+
+
+def run_daemon(
+    settings: Settings,
+    once: bool = False,
+    allow_action: bool = False,
+) -> int:
+    """Run the watchdog loop or execute a single check when once=True."""
+    stop = threading.Event()
+    _install_signal_handlers(stop)
+
     store = StateStore(settings.state_file)
     state = store.load()
 
     if not once and settings.initial_delay_seconds:
+        if settings.heartbeat_file:
+            write_heartbeat(settings.heartbeat_file)
         stop.wait(settings.initial_delay_seconds)
 
     exit_code = 0
@@ -128,6 +233,9 @@ def run_daemon(
     while not stop.is_set():
         cycle_start = time.monotonic()
         now = time.time()
+
+        if settings.heartbeat_file:
+            write_heartbeat(settings.heartbeat_file, now)
 
         try:
             report = collect_measurement_report(settings, now)
@@ -139,9 +247,6 @@ def run_daemon(
         state, action, action_reason = transition(state, result, settings, now)
         store.save(state)
 
-        if settings.heartbeat_file:
-            write_heartbeat(settings.heartbeat_file, now)
-
         log_result(
             result,
             state.consecutive_failures,
@@ -150,68 +255,21 @@ def run_daemon(
             settings.log_format,
         )
 
-        reboot_triggered = False
-
-        if action == ActionType.REBOOT:
-            reboot_triggered = True
-            if once and not allow_action:
-                LOG.warning(
-                    "action=reboot required but skipped: "
-                    "--once is dry-run by default without --allow-action"
-                )
-            else:
-                # Count every reboot attempt BEFORE calling device
-                state.record_reboot(now, accepted=False, reason=result.reason)
-                store.save(state)
-
-                try:
-                    success = restart_devolo(settings)
-                    if success:
-                        state.reboot_history[-1].accepted = True
-                        store.save(state)
-                        LOG.warning(
-                            "action=reboot device=%s result=accepted reason=%s",
-                            settings.devolo_ip,
-                            action_reason,
-                        )
-
-                        # Post-reboot delay and verification
-                        if not stop.is_set() and settings.post_reboot_delay_seconds:
-                            stop.wait(settings.post_reboot_delay_seconds)
-
-                        if not stop.is_set():
-                            verify_now = time.time()
-                            verify_report = collect_measurement_report(settings, verify_now)
-                            verify_result = evaluate_report(verify_report, settings)
-                            if verify_result.status == Status.HEALTHY:
-                                LOG.info(
-                                    "action=reboot device=%s post_reboot_verification=success",
-                                    settings.devolo_ip,
-                                )
-                                state.consecutive_failures = 0
-                                store.save(state)
-                            else:
-                                v_stat = verify_result.status.value
-                                v_reas = verify_result.reason
-                                LOG.warning(
-                                    "action=reboot device=%s "
-                                    "post_reboot_verification=failed status=%s reason=%s",
-                                    settings.devolo_ip,
-                                    v_stat,
-                                    v_reas,
-                                )
-                    else:
-                        LOG.error("action=reboot device=%s result=rejected", settings.devolo_ip)
-                except Exception:
-                    LOG.exception("action=reboot device=%s result=error", settings.devolo_ip)
+        reboot_triggered = _handle_action(
+            action,
+            action_reason,
+            result,
+            settings,
+            store,
+            state,
+            stop,
+            now,
+            once=once,
+            allow_action=allow_action,
+        )
 
         if once:
-            if result.status == Status.HEALTHY:
-                return 0
-            elif result.status == Status.DEGRADED:
-                return 1
-            else:
-                return 2
+            return _once_exit_code(result)
 
         elapsed = time.monotonic() - cycle_start
         wait_target = settings.cooldown_seconds if reboot_triggered else settings.interval_seconds

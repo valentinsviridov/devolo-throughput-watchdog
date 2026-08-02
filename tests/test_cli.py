@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import io
+import json
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, patch
 
 from devolo_watchdog.__main__ import (
@@ -51,6 +54,11 @@ class CliParserTests(unittest.TestCase):
         args = parser.parse_args(["calibrate", "--samples", "5"])
         self.assertEqual(args.subcommand, "calibrate")
         self.assertEqual(args.samples, 5)
+
+    def test_calibrate_rejects_non_positive_sample_count(self):
+        parser = build_parser()
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["calibrate", "--samples", "0"])
 
     def test_healthcheck_subcommand_parsing(self):
         parser = build_parser()
@@ -126,8 +134,15 @@ class CliParserTests(unittest.TestCase):
 
         mock_probe.return_value = WanIperfResult(upload_mbps=150.0, download_mbps=120.0)
         st = make_settings()
-        code = run_calibrate(st, samples_count=2, json_output=True)
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = run_calibrate(st, samples_count=2, json_output=True)
         self.assertEqual(code, 0)
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["status"], "ok")
+        self.assertNotIn("Sample 1/2", stdout.getvalue())
+        self.assertIn("Sample 1/2", stderr.getvalue())
         mock_sleep.assert_called_once_with(2)
 
     @patch("time.sleep")
@@ -144,6 +159,18 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(code, 1)
         mock_sleep.assert_called_once_with(2)
 
+    @patch("time.sleep")
+    @patch("devolo_watchdog.probes.probe_wan_iperf")
+    def test_run_calibrate_requires_both_directions(self, mock_probe, mock_sleep):
+        from devolo_watchdog.models import WanIperfResult
+
+        mock_probe.return_value = WanIperfResult(upload_mbps=150.0, error="download failed")
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            code = run_calibrate(make_settings(), samples_count=2, json_output=True)
+
+        self.assertEqual(code, 1)
+        mock_sleep.assert_called_once_with(2)
+
     def test_healthcheck_execution(self):
         with tempfile.NamedTemporaryFile("w+", delete=False) as tf:
             hb_path = tf.name
@@ -157,6 +184,48 @@ class CliParserTests(unittest.TestCase):
         finally:
             if os.path.exists(hb_path):
                 os.unlink(hb_path)
+
+    def test_healthcheck_json_output_is_valid_json(self):
+        with tempfile.NamedTemporaryFile("w+", delete=False) as tf:
+            hb_path = tf.name
+
+        try:
+            from devolo_watchdog.state import write_heartbeat
+
+            write_heartbeat(hb_path)
+            stdout = io.StringIO()
+            argv = [
+                "devolo-watchdog",
+                "--json",
+                "healthcheck",
+                "--heartbeat-file",
+                hb_path,
+                "--max-age-seconds",
+                "30",
+            ]
+            with patch("sys.argv", argv), redirect_stdout(stdout):
+                self.assertEqual(main(), 0)
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(payload["status"], "ok")
+            self.assertEqual(payload["max_age_seconds"], 30.0)
+        finally:
+            os.unlink(hb_path)
+
+    @patch("devolo_watchdog.__main__.run_daemon")
+    def test_json_run_enables_structured_logging(self, mock_run):
+        mock_run.return_value = 0
+        env = {
+            "DW_REMOTE_PROBE": "192.168.1.1",
+            "DW_DEVOLO_IP": "192.168.1.20",
+            "DW_MIN_UPLOAD_MBPS": "100",
+            "DW_MIN_DOWNLOAD_MBPS": "100",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with patch("sys.argv", ["devolo-watchdog", "--json", "run", "--once"]):
+                self.assertEqual(main(), 0)
+
+        settings = mock_run.call_args.args[0]
+        self.assertEqual(settings.log_format, "json")
 
     @patch("devolo_plc_api.Device")
     def test_run_discover_success(self, mock_device_cls):

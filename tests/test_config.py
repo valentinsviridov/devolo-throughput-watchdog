@@ -4,7 +4,12 @@ import os
 import unittest
 from unittest.mock import patch
 
-from devolo_watchdog.config import Settings, candidate_ports, parse_ports
+from devolo_watchdog.config import (
+    Settings,
+    candidate_ports,
+    heartbeat_max_age_seconds_from_env,
+    parse_ports,
+)
 
 
 def make_settings(**kwargs) -> Settings:
@@ -65,7 +70,7 @@ class SettingsValidationTests(unittest.TestCase):
                 devolo_ip="192.168.1.20",
                 min_upload_mbps=100.0,
                 min_download_mbps=80.0,
-                max_reboot_attempts=0,  # Invalid!
+                max_reboots_in_window=0,
             )
 
     def test_empty_iperf_server_raises(self):
@@ -90,6 +95,18 @@ class SettingsValidationTests(unittest.TestCase):
             make_settings(min_download_mbps=-10.0)
         with self.assertRaises(ValueError):
             make_settings(min_upload_mbps=float("nan"))
+
+    def test_non_finite_policy_thresholds_raise(self):
+        with self.assertRaises(ValueError):
+            make_settings(reboot_window_hours=float("nan"))
+        with self.assertRaises(ValueError):
+            make_settings(min_plc_phy_rate_mbps=float("inf"))
+
+    def test_direct_construction_rejects_invalid_ports_and_hosts(self):
+        with self.assertRaises(ValueError):
+            make_settings(iperf_ports=(0,), iperf_tries=1)
+        with self.assertRaises(ValueError):
+            make_settings(remote_probe="")
 
     def test_tries_exceeding_ports_count_raises(self):
         with self.assertRaises(ValueError) as cm:
@@ -119,9 +136,21 @@ class SettingsValidationTests(unittest.TestCase):
             cfg = Settings.from_env()
             self.assertEqual(cfg.remote_probe, "192.168.1.1")
             self.assertEqual(cfg.devolo_ip, "192.168.1.20")
-            self.assertEqual(cfg.max_reboot_attempts, 5)
+            self.assertEqual(cfg.max_reboots_in_window, 5)
             self.assertEqual(cfg.post_reboot_delay_seconds, 60)
             self.assertEqual(cfg.log_format, "json")
+
+    def test_new_reboot_window_setting_takes_precedence_over_legacy_alias(self):
+        env = {
+            "DW_REMOTE_PROBE": "192.168.1.1",
+            "DW_DEVOLO_IP": "192.168.1.20",
+            "DW_MIN_UPLOAD_MBPS": "100",
+            "DW_MIN_DOWNLOAD_MBPS": "100",
+            "DW_MAX_REBOOT_ATTEMPTS": "ignored-invalid-value",
+            "DW_MAX_REBOOTS_IN_WINDOW": "4",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(Settings.from_env().max_reboots_in_window, 4)
 
     def test_invalid_action_value_raises(self):
         env = {
@@ -134,3 +163,41 @@ class SettingsValidationTests(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             with self.assertRaises(ValueError):
                 Settings.from_env()
+
+    def test_invalid_safety_boolean_raises_instead_of_failing_open(self):
+        env = {
+            "DW_REMOTE_PROBE": "192.168.1.1",
+            "DW_DEVOLO_IP": "192.168.1.20",
+            "DW_MIN_UPLOAD_MBPS": "100",
+            "DW_MIN_DOWNLOAD_MBPS": "100",
+            "DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT": "perhaps",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(ValueError, "DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT"):
+                Settings.from_env()
+
+    def test_invalid_numeric_env_has_contextual_error(self):
+        env = {
+            "DW_REMOTE_PROBE": "192.168.1.1",
+            "DW_DEVOLO_IP": "192.168.1.20",
+            "DW_MIN_UPLOAD_MBPS": "fast",
+            "DW_MIN_DOWNLOAD_MBPS": "100",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(ValueError, "DW_MIN_UPLOAD_MBPS must be a number"):
+                Settings.from_env()
+
+    def test_heartbeat_max_age_defaults_to_twice_interval(self):
+        with patch.dict(os.environ, {"DW_INTERVAL_SECONDS": "600"}, clear=True):
+            self.assertEqual(heartbeat_max_age_seconds_from_env(), 1200.0)
+
+        with patch.dict(
+            os.environ,
+            {"DW_INTERVAL_SECONDS": "600", "DW_HEARTBEAT_MAX_AGE_SECONDS": "75"},
+            clear=True,
+        ):
+            self.assertEqual(heartbeat_max_age_seconds_from_env(), 75.0)
+
+        with patch.dict(os.environ, {"DW_INTERVAL_SECONDS": "0"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "DW_INTERVAL_SECONDS"):
+                heartbeat_max_age_seconds_from_env()

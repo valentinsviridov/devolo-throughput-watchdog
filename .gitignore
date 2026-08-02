@@ -17,6 +17,9 @@ ENV/
 .vscode/
 .ruff_cache/
 .pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
 # Local environment configuration
 devolo-throughput-watchdog.env

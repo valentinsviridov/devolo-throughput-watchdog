@@ -7,8 +7,7 @@ COPY --from=ghcr.io/astral-sh/uv:0.6.5 /uv /uvx /bin/
 RUN apt-get update && apt-get install -y --no-install-recommends \
     iperf3 \
     iputils-ping \
-    && rm -rf /var/lib/apt/lists/* \
-    && chmod u+s /usr/bin/ping
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -20,6 +19,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-editable --no-dev --no-cache --no-install-project
 
 # Copy application package and install project
+COPY README.md LICENSE ./
 COPY devolo_watchdog ./devolo_watchdog
 RUN uv sync --locked --no-editable --no-dev --no-cache
 

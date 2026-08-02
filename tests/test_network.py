@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 from devolo_watchdog.config import Settings
 from devolo_watchdog.core import IperfUnavailable
-from devolo_watchdog.models import GatewayProbeResult, IperfSample, WanIperfResult
+from devolo_watchdog.models import GatewayProbeResult, IperfSample
 from devolo_watchdog.network import ping, run_iperf
 
 
@@ -51,24 +51,26 @@ class LegacyNetworkTests(unittest.TestCase):
             run_iperf(st, reverse=True, single_fn=broken_fn, ports=(5201,))
         self.assertIn("all candidate ports failed", str(cm.exception))
 
-    @patch("devolo_watchdog.network.probe_wan_iperf")
+    @patch("devolo_watchdog.network.probe_iperf_direction")
     def test_run_iperf_standard_upload_success(self, mock_probe):
         st = make_settings()
-        mock_probe.return_value = WanIperfResult(upload_mbps=120.0, upload_port=5201)
-        sample = run_iperf(st, reverse=False)
+        mock_probe.return_value = (IperfSample(120.0, 5201), None)
+        sample = run_iperf(st, reverse=False, ports=(5201,))
         self.assertEqual(sample, IperfSample(120.0, 5201))
+        mock_probe.assert_called_once_with(st, (5201,), False)
 
-    @patch("devolo_watchdog.network.probe_wan_iperf")
+    @patch("devolo_watchdog.network.probe_iperf_direction")
     def test_run_iperf_standard_download_success(self, mock_probe):
         st = make_settings()
-        mock_probe.return_value = WanIperfResult(download_mbps=95.0, download_port=5202)
-        sample = run_iperf(st, reverse=True)
+        mock_probe.return_value = (IperfSample(95.0, 5202), None)
+        sample = run_iperf(st, reverse=True, ports=(5202,))
         self.assertEqual(sample, IperfSample(95.0, 5202))
+        mock_probe.assert_called_once_with(st, (5202,), True)
 
-    @patch("devolo_watchdog.network.probe_wan_iperf")
+    @patch("devolo_watchdog.network.probe_iperf_direction")
     def test_run_iperf_standard_failure_raises_iperf_unavailable(self, mock_probe):
         st = make_settings()
-        mock_probe.return_value = WanIperfResult(error="connection timed out")
+        mock_probe.return_value = (None, "connection timed out")
         with self.assertRaises(IperfUnavailable) as cm:
             run_iperf(st, reverse=False)
         self.assertIn("public iperf test failed: connection timed out", str(cm.exception))

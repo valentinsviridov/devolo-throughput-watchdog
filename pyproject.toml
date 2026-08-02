@@ -1,21 +1,21 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "devolo-throughput-watchdog"
 version = "0.1.0"
-description = "Watchdog devolo Magic 2 LAN via iperf3"
+description = "Safely recover degraded devolo PLC links using iperf3 and PHY evidence"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "GPL-3.0-or-later" }
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [
     { name = "devolo watchdog maintainers" }
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: System Administrators",
-    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -32,16 +32,13 @@ dev-test = "devolo_watchdog.dev:test"
 dev-lint = "devolo_watchdog.dev:lint"
 dev-check = "devolo_watchdog.dev:check"
 dev-reformat = "devolo_watchdog.dev:reformat"
-test = "devolo_watchdog.dev:test"
-lint = "devolo_watchdog.dev:lint"
-check = "devolo_watchdog.dev:check"
-reformat = "devolo_watchdog.dev:reformat"
 
 [dependency-groups]
 dev = [
     "pytest>=8.0.0",
     "mypy>=1.8.0",
     "ruff>=0.3.0",
+    "pytest-cov>=5.0.0",
 ]
 
 [tool.ruff]
@@ -49,11 +46,27 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+select = ["E", "F", "I", "UP", "B", "C90"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+addopts = ["--cov=devolo_watchdog", "--cov-report=term-missing"]
+
+[tool.coverage.run]
+branch = true
+source = ["devolo_watchdog"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
+
+[tool.setuptools.packages.find]
+include = ["devolo_watchdog*"]
 
 [tool.mypy]
 python_version = "3.11"

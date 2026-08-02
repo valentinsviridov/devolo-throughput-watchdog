@@ -3,21 +3,38 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
+import math
 import os
 import sys
 import time
 from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from devolo_watchdog.actions import read_password
-from devolo_watchdog.config import Settings
+from devolo_watchdog.config import Settings, heartbeat_max_age_seconds_from_env
 from devolo_watchdog.probes import probe_gateway
 from devolo_watchdog.runner import run_daemon
 from devolo_watchdog.state import check_heartbeat
 
 LOG = logging.getLogger("devolo-throughput-watchdog")
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be finite and greater than zero")
+    return parsed
 
 
 class WatchdogArgumentParser(argparse.ArgumentParser):
@@ -65,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # doctor
     subparsers.add_parser(
-        "doctor", parents=[common_parser], help="diagnose environment, binaries, DNS, and API"
+        "doctor", parents=[common_parser], help="diagnose environment, binaries, network, and API"
     )
 
     # discover
@@ -78,7 +95,10 @@ def build_parser() -> argparse.ArgumentParser:
         "calibrate", parents=[common_parser], help="recommend thresholds from baseline probes"
     )
     cal_parser.add_argument(
-        "--samples", type=int, default=3, help="number of test cycles to run for calibration"
+        "--samples",
+        type=_positive_int,
+        default=3,
+        help="number of test cycles to run for calibration",
     )
 
     # healthcheck
@@ -86,6 +106,11 @@ def build_parser() -> argparse.ArgumentParser:
         "healthcheck", parents=[common_parser], help="check heartbeat file freshness"
     )
     hb_parser.add_argument("--heartbeat-file", help="path to heartbeat file")
+    hb_parser.add_argument(
+        "--max-age-seconds",
+        type=_positive_float,
+        help="maximum heartbeat age (default: twice DW_INTERVAL_SECONDS, minimum 90)",
+    )
 
     # Top-level backwards compatibility flags
     parser.add_argument("--once", action="store_true", help=argparse.SUPPRESS)
@@ -95,7 +120,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_doctor(settings: Settings | None, json_output: bool) -> int:
+def _render_doctor_results(results: list[dict[str, Any]], json_output: bool) -> int:
+    all_passed = all(result["passed"] for result in results)
+    if json_output:
+        print(json.dumps({"status": "ok" if all_passed else "error", "checks": results}, indent=2))
+    else:
+        print("=== devolo-watchdog doctor ===")
+        for result in results:
+            mark = "✓" if result["passed"] else "✗"
+            print(f"[{mark}] {result['check']}: {result['detail']}")
+    return 0 if all_passed else 1
+
+
+def run_doctor(
+    settings: Settings | None,
+    json_output: bool,
+    configuration_error: str | None = None,
+) -> int:
     """Perform diagnostic checks on runtime environment and devolo device."""
     results: list[dict[str, Any]] = []
 
@@ -118,7 +159,8 @@ def run_doctor(settings: Settings | None, json_output: bool) -> int:
 
     # Config
     if settings is None:
-        record("configuration", False, "Failed to parse settings from environment")
+        detail = configuration_error or "Failed to parse settings from environment"
+        record("configuration", False, detail)
     else:
         record(
             "configuration",
@@ -128,11 +170,14 @@ def run_doctor(settings: Settings | None, json_output: bool) -> int:
         )
 
         # Password file check
+        device_password: str | None = None
+        password_valid = True
         if settings.password_file:
             try:
-                read_password(settings.password_file)
+                device_password = read_password(settings.password_file)
                 record("password_file", True, f"Readable: {settings.password_file}")
             except ValueError as exc:
+                password_valid = False
                 record("password_file", False, str(exc))
 
         # State directory check
@@ -164,114 +209,122 @@ def run_doctor(settings: Settings | None, json_output: bool) -> int:
         record("devolo_ping", dev.reachable, dev.error or f"Reachable: {settings.devolo_ip}")
 
         # Devolo API discovery check
-        try:
-            from devolo_watchdog.probes import probe_plc_phy
+        if password_valid:
+            try:
+                from devolo_watchdog.probes import probe_plc_phy
 
-            plc = probe_plc_phy(settings.devolo_ip, settings.password_file)
-            record("devolo_plc_api", plc.reachable, plc.error or "PLC API reachable")
-        except Exception as exc:
-            record("devolo_plc_api", False, str(exc))
+                plc = probe_plc_phy(settings.devolo_ip, device_password)
+                record("devolo_plc_api", plc.reachable, plc.error or "PLC API reachable")
+            except Exception as exc:
+                record("devolo_plc_api", False, str(exc))
+        else:
+            record("devolo_plc_api", False, "Skipped because password file is invalid")
 
-    all_passed = all(r["passed"] for r in results)
-    exit_code = 0 if all_passed else 1
+    return _render_doctor_results(results, json_output)
 
+
+def _print_command_error(message: str, json_output: bool, *, prefix: str = "Error") -> None:
     if json_output:
-        print(json.dumps({"status": "ok" if all_passed else "error", "checks": results}, indent=2))
+        print(json.dumps({"status": "error", "error": message}))
     else:
-        print("=== devolo-watchdog doctor ===")
-        for r in results:
-            mark = "✓" if r["passed"] else "✗"
-            print(f"[{mark}] {r['check']}: {r['detail']}")
+        print(f"{prefix}: {message}", file=sys.stderr)
 
-    return exit_code
+
+async def _discover_device(settings: Settings, device_class: Any) -> dict[str, Any]:
+    from devolo_watchdog.probes import patch_devolo_device_interfaces
+
+    patch_devolo_device_interfaces()
+    device = device_class(ip=settings.devolo_ip)
+    if password := read_password(settings.password_file):
+        device.password = password
+
+    async with device:
+        info = {
+            "ip": settings.devolo_ip,
+            "serial_number": getattr(device, "serial_number", "unknown"),
+            "mac": getattr(device, "mac", "unknown"),
+        }
+        plc_api = getattr(device, "plcnet", getattr(device, "plc", None))
+        if plc_api is None:
+            return info
+        try:
+            overview = await plc_api.async_get_network_overview()
+            info["devices"] = [
+                {
+                    "mac": getattr(node, "mac_address", getattr(node, "mac", "")),
+                    "user_device_name": getattr(node, "user_device_name", ""),
+                    "product_name": getattr(node, "product_name", ""),
+                    "attached_to_router": getattr(node, "attached_to_router", False),
+                }
+                for node in getattr(overview, "devices", [])
+            ]
+            if hasattr(overview, "data_rates"):
+                info["data_rates"] = [
+                    {
+                        "mac_address_from": getattr(rate, "mac_address_from", ""),
+                        "mac_address_to": getattr(rate, "mac_address_to", ""),
+                        "rx_rate": getattr(rate, "rx_rate", 0.0),
+                        "tx_rate": getattr(rate, "tx_rate", 0.0),
+                    }
+                    for rate in overview.data_rates
+                ]
+        except Exception as exc:
+            info["plc_overview_error"] = str(exc)
+        return info
+
+
+def _render_discovery(data: dict[str, Any], json_output: bool) -> None:
+    if json_output:
+        print(json.dumps(data, indent=2))
+        return
+
+    print("=== Devolo Device Discovery ===")
+    print(f"IP: {data['ip']}")
+    print(f"MAC: {data['mac']}")
+    print(f"Serial: {data['serial_number']}")
+    if "devices" in data:
+        print("\nConnected PLC Nodes:")
+        for node in data["devices"]:
+            name = node.get("product_name") or node.get("user_device_name") or ""
+            detail = f" ({name})" if name else ""
+            print(f"  - MAC: {node['mac']}{detail}")
+    if "data_rates" in data and data["data_rates"]:
+        print("\nPLC Transmission Rates:")
+        for rate in data["data_rates"]:
+            print(
+                f"  - {rate['mac_address_from']} -> {rate['mac_address_to']}: "
+                f"RX: {rate['rx_rate']:.1f} Mbps, TX: {rate['tx_rate']:.1f} Mbps"
+            )
 
 
 def run_discover(settings: Settings, json_output: bool) -> int:
     """Discover devolo devices, firmware, and PHY link topology."""
-    import asyncio
-
     try:
         from devolo_plc_api import Device
     except ImportError:
-        print("Error: devolo_plc_api library is not installed", file=sys.stderr)
+        _print_command_error("devolo_plc_api library is not installed", json_output)
         return 3
 
-    async def _discover() -> dict[str, Any]:
-        from devolo_watchdog.probes import patch_devolo_device_interfaces
-
-        patch_devolo_device_interfaces()
-
-        device = Device(ip=settings.devolo_ip)
-        if password := read_password(settings.password_file):
-            device.password = password
-        async with device:
-            info = {
-                "ip": settings.devolo_ip,
-                "serial_number": getattr(device, "serial_number", "unknown"),
-                "mac": getattr(device, "mac", "unknown"),
-            }
-
-            plc_api = getattr(device, "plcnet", getattr(device, "plc", None))
-            if plc_api:
-                try:
-                    overview = await plc_api.async_get_network_overview()
-                    info["devices"] = [
-                        {
-                            "mac": getattr(d, "mac_address", getattr(d, "mac", "")),
-                            "user_device_name": getattr(d, "user_device_name", ""),
-                            "product_name": getattr(d, "product_name", ""),
-                            "attached_to_router": getattr(d, "attached_to_router", False),
-                        }
-                        for d in getattr(overview, "devices", [])
-                    ]
-                    if hasattr(overview, "data_rates"):
-                        info["data_rates"] = [
-                            {
-                                "mac_address_from": getattr(rate, "mac_address_from", ""),
-                                "mac_address_to": getattr(rate, "mac_address_to", ""),
-                                "rx_rate": getattr(rate, "rx_rate", 0.0),
-                                "tx_rate": getattr(rate, "tx_rate", 0.0),
-                            }
-                            for rate in overview.data_rates
-                        ]
-                except Exception as exc:
-                    info["plc_overview_error"] = str(exc)
-
-            return info
-
     try:
-        data = asyncio.run(_discover())
-        if json_output:
-            print(json.dumps(data, indent=2))
-        else:
-            print("=== Devolo Device Discovery ===")
-            print(f"IP: {data['ip']}")
-            print(f"MAC: {data['mac']}")
-            print(f"Serial: {data['serial_number']}")
-            if "devices" in data:
-                print("\nConnected PLC Nodes:")
-                for node in data["devices"]:
-                    name = node.get("product_name") or node.get("user_device_name") or ""
-                    detail = f" ({name})" if name else ""
-                    print(f"  - MAC: {node['mac']}{detail}")
-            if "data_rates" in data and data["data_rates"]:
-                print("\nPLC Transmission Rates:")
-                for rate in data["data_rates"]:
-                    rx = rate["rx_rate"]
-                    tx = rate["tx_rate"]
-                    print(
-                        f"  - {rate['mac_address_from']} -> {rate['mac_address_to']}: "
-                        f"RX: {rx:.1f} Mbps, TX: {tx:.1f} Mbps"
-                    )
-        return 0
+        data = asyncio.run(_discover_device(settings, Device))
     except Exception as exc:
-        print(f"Discovery failed: {exc}", file=sys.stderr)
+        _print_command_error(str(exc), json_output, prefix="Discovery failed")
         return 2
+    _render_discovery(data, json_output)
+    return 0
 
 
 def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> int:
     """Perform no-action throughput probing and recommend upload/download thresholds."""
-    print(f"Running {samples_count} calibration probes (no actions will be taken)...")
+    if samples_count <= 0:
+        print("Calibration failed: --samples must be greater than zero", file=sys.stderr)
+        return 3
+
+    progress_stream = sys.stderr if json_output else sys.stdout
+    print(
+        f"Running {samples_count} calibration probes (no actions will be taken)...",
+        file=progress_stream,
+    )
     from devolo_watchdog.config import candidate_ports
     from devolo_watchdog.probes import probe_wan_iperf
 
@@ -284,45 +337,60 @@ def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> 
         ports_down = candidate_ports(settings, reverse=True, now=now)
         res = probe_wan_iperf(settings, ports_up, ports_down)
 
-        if res.upload_mbps is not None:
+        if res.upload_mbps is not None and res.download_mbps is not None:
             up_samples.append(res.upload_mbps)
-        if res.download_mbps is not None:
             down_samples.append(res.download_mbps)
 
         err_detail = f" (error: {res.error})" if res.error else ""
         print(
             f"Sample {i + 1}/{samples_count}: upload={res.upload_mbps} Mbps, "
-            f"download={res.download_mbps} Mbps{err_detail}"
+            f"download={res.download_mbps} Mbps{err_detail}",
+            file=progress_stream,
         )
         if i < samples_count - 1:
             time.sleep(2)
 
-    if not up_samples:
-        print("Calibration failed: insufficient valid samples", file=sys.stderr)
+    if not up_samples or not down_samples:
+        error_data = {
+            "status": "error",
+            "error": "insufficient valid bidirectional samples",
+            "requested_samples": samples_count,
+            "successful_upload_samples": len(up_samples),
+            "successful_download_samples": len(down_samples),
+        }
+        if json_output:
+            print(json.dumps(error_data, indent=2))
+        else:
+            print("Calibration failed: insufficient valid bidirectional samples", file=sys.stderr)
         return 1
 
-    result_data: dict[str, Any] = {"samples": samples_count}
+    result_data: dict[str, Any] = {
+        "status": "ok",
+        "requested_samples": samples_count,
+        "successful_upload_samples": len(up_samples),
+        "successful_download_samples": len(down_samples),
+    }
     rec_thresholds: dict[str, float] = {}
 
-    if up_samples and down_samples:
-        up_sorted = sorted(up_samples)
-        down_sorted = sorted(down_samples)
-        idx = max(0, int(len(up_sorted) * 0.10))
-        rec_up = round(up_sorted[idx] * 0.70, 1)
-        rec_down = round(down_sorted[idx] * 0.70, 1)
+    up_sorted = sorted(up_samples)
+    down_sorted = sorted(down_samples)
+    up_idx = max(0, int(len(up_sorted) * 0.10))
+    down_idx = max(0, int(len(down_sorted) * 0.10))
+    rec_up = round(up_sorted[up_idx] * 0.70, 1)
+    rec_down = round(down_sorted[down_idx] * 0.70, 1)
 
-        result_data["upload_mbps"] = {
-            "min": min(up_samples),
-            "max": max(up_samples),
-            "avg": sum(up_samples) / len(up_samples),
-        }
-        result_data["download_mbps"] = {
-            "min": min(down_samples),
-            "max": max(down_samples),
-            "avg": sum(down_samples) / len(down_samples),
-        }
-        rec_thresholds["DW_MIN_UPLOAD_MBPS"] = rec_up
-        rec_thresholds["DW_MIN_DOWNLOAD_MBPS"] = rec_down
+    result_data["upload_mbps"] = {
+        "min": min(up_samples),
+        "max": max(up_samples),
+        "avg": sum(up_samples) / len(up_samples),
+    }
+    result_data["download_mbps"] = {
+        "min": min(down_samples),
+        "max": max(down_samples),
+        "avg": sum(down_samples) / len(down_samples),
+    }
+    rec_thresholds["DW_MIN_UPLOAD_MBPS"] = rec_up
+    rec_thresholds["DW_MIN_DOWNLOAD_MBPS"] = rec_down
 
     result_data["recommended_thresholds"] = rec_thresholds
 
@@ -330,17 +398,16 @@ def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> 
         print(json.dumps(result_data, indent=2))
     else:
         print("\n=== Calibration Complete ===")
-        if up_samples and down_samples:
-            up_avg = sum(up_samples) / len(up_samples)
-            down_avg = sum(down_samples) / len(down_samples)
-            print(
-                f"Upload   - Min: {min(up_samples):.1f} Mbps, "
-                f"Max: {max(up_samples):.1f} Mbps, Avg: {up_avg:.1f} Mbps"
-            )
-            print(
-                f"Download - Min: {min(down_samples):.1f} Mbps, "
-                f"Max: {max(down_samples):.1f} Mbps, Avg: {down_avg:.1f} Mbps"
-            )
+        up_avg = sum(up_samples) / len(up_samples)
+        down_avg = sum(down_samples) / len(down_samples)
+        print(
+            f"Upload   - Min: {min(up_samples):.1f} Mbps, "
+            f"Max: {max(up_samples):.1f} Mbps, Avg: {up_avg:.1f} Mbps"
+        )
+        print(
+            f"Download - Min: {min(down_samples):.1f} Mbps, "
+            f"Max: {max(down_samples):.1f} Mbps, Avg: {down_avg:.1f} Mbps"
+        )
         print("\nRecommended Environment Variables:")
         for key, val in rec_thresholds.items():
             print(f"{key}={val}")
@@ -364,76 +431,71 @@ def _load_env_file_if_present() -> None:
                     val = val.strip().strip("'\"")
                     if key and key not in os.environ:
                         os.environ[key] = val
-            except Exception:
-                pass
+            except (OSError, UnicodeError) as exc:
+                LOG.warning("Unable to read environment file %s: %s", path, exc)
             break
 
 
-def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    _load_env_file_if_present()
-    args = build_parser().parse_args()
-
-    sub = args.subcommand
-    once = getattr(args, "once", False)
-    allow_action = getattr(args, "allow_action", False)
-    check_config = getattr(args, "check_config", False)
-    json_output = getattr(args, "json", False)
-
-    if sub == "healthcheck":
-        hb_path = (
-            getattr(args, "heartbeat_file", None)
-            or os.getenv("DW_HEARTBEAT_FILE")
-            or "/tmp/watchdog_heartbeat"
-        )
-        healthy = check_heartbeat(hb_path, max_age_seconds=90.0)
-        if healthy:
-            print("OK - Heartbeat fresh")
-            return 0
-        else:
-            print("CRITICAL - Heartbeat missing or stale", file=sys.stderr)
-            return 1
-
+def _run_healthcheck(args: argparse.Namespace, json_output: bool) -> int:
+    heartbeat_file = (
+        getattr(args, "heartbeat_file", None)
+        or os.getenv("DW_HEARTBEAT_FILE")
+        or "/tmp/watchdog_heartbeat"
+    )
     try:
-        settings = Settings.from_env()
+        max_age = getattr(args, "max_age_seconds", None) or heartbeat_max_age_seconds_from_env()
     except ValueError as exc:
-        if sub == "doctor":
-            return run_doctor(None, json_output)
-        LOG.error("configuration error: %s", exc)
-        return 3
+        _print_command_error(str(exc), json_output, prefix="CRITICAL - Invalid configuration")
+        return 2
 
-    if check_config:
-        if settings.password_file:
-            try:
-                read_password(settings.password_file)
-                LOG.info("password file valid: %s", settings.password_file)
-            except ValueError as exc:
-                LOG.error("password file check failed: %s", exc)
-                return 3
-
-        p_cnt = settings.ping_count
-        p_to = settings.ping_timeout_seconds
-        probe_res = probe_gateway(settings.remote_probe, p_cnt, p_to)
-        devolo_res = probe_gateway(settings.devolo_ip, p_cnt, p_to)
-
-        if not probe_res.reachable or not devolo_res.reachable:
-            LOG.error(
-                "configuration check failed: remote_probe reachable=%s (%s), "
-                "devolo_ip reachable=%s (%s)",
-                probe_res.reachable,
-                probe_res.error,
-                devolo_res.reachable,
-                devolo_res.error,
+    healthy = check_heartbeat(heartbeat_file, max_age_seconds=max_age)
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "status": "ok" if healthy else "critical",
+                    "heartbeat_file": heartbeat_file,
+                    "max_age_seconds": max_age,
+                }
             )
-            return 2
+        )
+    elif healthy:
+        print("OK - Heartbeat fresh")
+    else:
+        print("CRITICAL - Heartbeat missing or stale", file=sys.stderr)
+    return 0 if healthy else 1
 
+
+def _run_configuration_check(settings: Settings, json_output: bool) -> int:
+    if settings.password_file:
+        try:
+            read_password(settings.password_file)
+        except ValueError as exc:
+            _print_command_error(str(exc), json_output, prefix="Password file check failed")
+            return 3
+
+    probe = probe_gateway(settings.remote_probe, settings.ping_count, settings.ping_timeout_seconds)
+    device = probe_gateway(settings.devolo_ip, settings.ping_count, settings.ping_timeout_seconds)
+    data = {
+        "status": "ok" if probe.reachable and device.reachable else "unreachable",
+        "iperf_server": settings.iperf_server,
+        "iperf_ports": list(settings.iperf_ports),
+        "test_bytes": settings.test_bytes,
+        "remote_probe": {"host": settings.remote_probe, "reachable": probe.reachable},
+        "devolo": {"host": settings.devolo_ip, "reachable": device.reachable},
+        "min_upload_mbps": settings.min_upload_mbps,
+        "min_download_mbps": settings.min_download_mbps,
+        "action": settings.action,
+    }
+    if json_output:
+        print(json.dumps(data))
+    elif data["status"] == "ok":
         LOG.info(
-            "configuration valid: iperf_server=%s ports=%d-%d test_bytes=%s "
-            "remote_probe=%s (reachable=True) devolo_ip=%s (reachable=True) min_upload=%.1fMbps "
-            "min_download=%.1fMbps action=%s",
+            "configuration valid: iperf_server=%s ports=%s test_bytes=%s "
+            "remote_probe=%s (reachable=True) devolo_ip=%s (reachable=True) "
+            "min_upload=%.1fMbps min_download=%.1fMbps action=%s",
             settings.iperf_server,
-            min(settings.iperf_ports),
-            max(settings.iperf_ports),
+            ",".join(str(port) for port in settings.iperf_ports),
             settings.test_bytes,
             settings.remote_probe,
             settings.devolo_ip,
@@ -441,7 +503,53 @@ def main() -> int:
             settings.min_download_mbps,
             settings.action,
         )
-        return 0
+    else:
+        LOG.error(
+            "configuration check failed: remote_probe reachable=%s (%s), "
+            "devolo_ip reachable=%s (%s)",
+            probe.reachable,
+            probe.error,
+            device.reachable,
+            device.error,
+        )
+    return 0 if data["status"] == "ok" else 2
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+
+    sub = args.subcommand
+    once = getattr(args, "once", False)
+    allow_action = getattr(args, "allow_action", False)
+    check_config = getattr(args, "check_config", False)
+    json_output = getattr(args, "json", False)
+    log_format = (
+        "%(message)s"
+        if json_output and sub in {None, "run"}
+        else ("%(asctime)s %(levelname)s %(message)s")
+    )
+    logging.basicConfig(level=logging.INFO, format=log_format)
+    _load_env_file_if_present()
+
+    if sub == "healthcheck":
+        return _run_healthcheck(args, json_output)
+
+    try:
+        settings = Settings.from_env()
+    except ValueError as exc:
+        if sub == "doctor":
+            return run_doctor(None, json_output, str(exc))
+        if json_output:
+            print(json.dumps({"status": "misconfigured", "error": str(exc)}))
+        else:
+            LOG.error("configuration error: %s", exc)
+        return 3
+
+    if json_output and sub in {None, "run"}:
+        settings = replace(settings, log_format="json")
+
+    if check_config:
+        return _run_configuration_check(settings, json_output)
 
     if sub == "doctor":
         return run_doctor(settings, json_output)

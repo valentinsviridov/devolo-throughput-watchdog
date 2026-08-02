@@ -16,9 +16,12 @@ def read_password(path: str | None) -> str | None:
     if not path:
         return None
     try:
-        return Path(path).read_text(encoding="utf-8").strip() or None
-    except (FileNotFoundError, PermissionError) as exc:
+        password = Path(path).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
         raise ValueError(f"DW_PASSWORD_FILE unreadable ({path}): {exc}") from None
+    if not password:
+        raise ValueError(f"DW_PASSWORD_FILE is empty ({path})")
+    return password
 
 
 async def async_restart_devolo(settings: Settings) -> bool:

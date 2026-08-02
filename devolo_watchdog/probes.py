@@ -54,7 +54,9 @@ def parse_iperf_mbps(payload: str) -> float:
         end.get("sum", {}).get("bits_per_second"),
         end.get("sum_sent", {}).get("bits_per_second"),
     )
-    bits_per_second = next((v for v in candidates if isinstance(v, (int, float))), None)
+    bits_per_second = next(
+        (v for v in candidates if isinstance(v, (int, float)) and not isinstance(v, bool)), None
+    )
     if bits_per_second is None:
         raise IperfError("iperf3 JSON does not contain an end-to-end throughput value")
     mbps = float(bits_per_second) / 1_000_000.0
@@ -166,9 +168,10 @@ def run_single_iperf(
     return parse_iperf_mbps(result.stdout)
 
 
-def _run_direction(
+def probe_iperf_direction(
     settings: Settings, ports: tuple[int, ...], reverse: bool
 ) -> tuple[IperfSample | None, str | None]:
+    """Try candidate ports for one iperf direction and aggregate failures."""
     errors: list[str] = []
     for p in ports:
         try:
@@ -191,11 +194,11 @@ def probe_wan_iperf(
     settings: Settings, ports_up: tuple[int, ...], ports_down: tuple[int, ...]
 ) -> WanIperfResult:
     """Run WAN throughput probes for upload and download across port lists."""
-    up_sample, up_err = _run_direction(settings, ports_up, reverse=False)
+    up_sample, up_err = probe_iperf_direction(settings, ports_up, reverse=False)
     if not up_sample:
         return WanIperfResult(error=f"WAN upload test failed: {up_err}")
 
-    down_sample, down_err = _run_direction(settings, ports_down, reverse=True)
+    down_sample, down_err = probe_iperf_direction(settings, ports_down, reverse=True)
     if not down_sample:
         return WanIperfResult(
             upload_mbps=up_sample.mbps,
@@ -238,8 +241,29 @@ def patch_devolo_device_interfaces() -> None:
 
         Device._get_relevant_interfaces = _patched_get_relevant_interfaces  # type: ignore[method-assign]
         _DEVICE_INTERFACES_PATCHED = True
-    except Exception:
-        pass
+    except Exception as exc:
+        LOG.debug("Unable to install devolo interface fallback: %s", exc)
+
+
+def _normalize_mac(value: object) -> str:
+    return "".join(character for character in str(value).lower() if character.isalnum())
+
+
+def _rates_for_device(data_rates: list[object], device_mac: object) -> list[object]:
+    """Prefer PHY rates connected to the configured device when endpoints are available."""
+    normalized_device_mac = _normalize_mac(device_mac)
+    if not normalized_device_mac:
+        return data_rates
+
+    matching_rates = []
+    for rate in data_rates:
+        endpoints = (
+            getattr(rate, "mac_address_from", ""),
+            getattr(rate, "mac_address_to", ""),
+        )
+        if any(_normalize_mac(endpoint) == normalized_device_mac for endpoint in endpoints):
+            matching_rates.append(rate)
+    return matching_rates or data_rates
 
 
 async def async_probe_plc_phy(devolo_ip: str, password: str | None = None) -> PlcPhyResult:
@@ -251,19 +275,10 @@ async def async_probe_plc_phy(devolo_ip: str, password: str | None = None) -> Pl
 
     patch_devolo_device_interfaces()
 
-    actual_password = password
-    if password:
-        from devolo_watchdog.actions import read_password
-
-        try:
-            actual_password = read_password(password)
-        except Exception:
-            actual_password = password
-
     try:
         device = Device(ip=devolo_ip)
-        if actual_password:
-            device.password = actual_password
+        if password:
+            device.password = password
         async with device:
             plc_api = getattr(device, "plcnet", getattr(device, "plc", None))
             if plc_api is None:
@@ -273,8 +288,11 @@ async def async_probe_plc_phy(devolo_ip: str, password: str | None = None) -> Pl
             rx_rates: list[float] = []
             tx_rates: list[float] = []
 
-            data_items = list(getattr(overview, "data_rates", [])) or list(
-                getattr(overview, "devices", [])
+            data_rates = list(getattr(overview, "data_rates", []))
+            data_items = (
+                _rates_for_device(data_rates, getattr(device, "mac", ""))
+                if data_rates
+                else list(getattr(overview, "devices", []))
             )
             for item in data_items:
                 rx = getattr(item, "rx_rate", None)

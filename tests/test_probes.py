@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from devolo_watchdog.config import Settings
 from devolo_watchdog.probes import (
     IperfError,
-    _run_direction,
     parse_iperf_mbps,
     patch_devolo_device_interfaces,
     probe_gateway,
+    probe_iperf_direction,
     probe_plc_phy,
     probe_wan_iperf,
     run_single_iperf,
@@ -64,6 +64,10 @@ class ParseIperfTests(unittest.TestCase):
     def test_non_finite_throughput_raises_iperf_error(self):
         with self.assertRaises(IperfError):
             parse_iperf_mbps(json.dumps({"end": {"sum_received": {"bits_per_second": "NaN"}}}))
+
+    def test_boolean_throughput_is_not_accepted_as_a_number(self):
+        with self.assertRaises(IperfError):
+            parse_iperf_mbps(json.dumps({"end": {"sum_received": {"bits_per_second": True}}}))
 
 
 class SingleIperfCommandTests(unittest.TestCase):
@@ -145,14 +149,14 @@ class RunDirectionTests(unittest.TestCase):
             IperfError("timeout"),
         ]
         st = make_settings()
-        sample, err = _run_direction(st, (5201, 5202), reverse=False)
+        sample, err = probe_iperf_direction(st, (5201, 5202), reverse=False)
         self.assertIsNone(sample)
         self.assertIn("port 5201: connection refused", err)
         self.assertIn("port 5202: timeout", err)
 
 
 class ProbeWanIperfTests(unittest.TestCase):
-    @patch("devolo_watchdog.probes._run_direction")
+    @patch("devolo_watchdog.probes.probe_iperf_direction")
     def test_probe_wan_iperf_full_success(self, mock_direction):
         from devolo_watchdog.models import IperfSample
 
@@ -166,7 +170,7 @@ class ProbeWanIperfTests(unittest.TestCase):
         self.assertEqual(res.download_mbps, 120.0)
         self.assertIsNone(res.error)
 
-    @patch("devolo_watchdog.probes._run_direction")
+    @patch("devolo_watchdog.probes.probe_iperf_direction")
     def test_probe_wan_iperf_upload_failure(self, mock_direction):
         mock_direction.return_value = (None, "all ports rejected")
         st = make_settings()
@@ -174,7 +178,7 @@ class ProbeWanIperfTests(unittest.TestCase):
         self.assertIsNone(res.upload_mbps)
         self.assertIn("WAN upload test failed: all ports rejected", res.error)
 
-    @patch("devolo_watchdog.probes._run_direction")
+    @patch("devolo_watchdog.probes.probe_iperf_direction")
     def test_probe_wan_iperf_download_failure(self, mock_direction):
         from devolo_watchdog.models import IperfSample
 
@@ -251,17 +255,35 @@ class PlcPhyProbeTests(unittest.TestCase):
         mock_device = AsyncMock()
         mock_device_cls.return_value = mock_device
         mock_device.__aenter__.return_value = mock_device
+        mock_device.mac = "AA:BB:CC:DD:EE:FF"
 
         mock_overview = MagicMock()
-        rate1 = MagicMock(rx_rate=300.0, tx_rate=250.0)
-        rate2 = MagicMock(rx_rate=200.0, tx_rate=220.0)
-        mock_overview.data_rates = [rate1, rate2]
+        rate1 = MagicMock(
+            rx_rate=300.0,
+            tx_rate=250.0,
+            mac_address_from="AA:BB:CC:DD:EE:FF",
+            mac_address_to="11:22:33:44:55:66",
+        )
+        rate2 = MagicMock(
+            rx_rate=200.0,
+            tx_rate=220.0,
+            mac_address_from="11:22:33:44:55:66",
+            mac_address_to="aa-bb-cc-dd-ee-ff",
+        )
+        unrelated_rate = MagicMock(
+            rx_rate=5.0,
+            tx_rate=5.0,
+            mac_address_from="22:22:22:22:22:22",
+            mac_address_to="33:33:33:33:33:33",
+        )
+        mock_overview.data_rates = [rate1, rate2, unrelated_rate]
         mock_device.plcnet.async_get_network_overview.return_value = mock_overview
 
-        res = probe_plc_phy("192.168.1.20")
+        res = probe_plc_phy("192.168.1.20", "secret")
         self.assertTrue(res.reachable)
         self.assertEqual(res.rx_rate_mbps, 200.0)
         self.assertEqual(res.tx_rate_mbps, 220.0)
+        self.assertEqual(mock_device.password, "secret")
 
     @patch("devolo_plc_api.Device")
     def test_async_probe_plc_phy_missing_plc_api(self, mock_device_cls):
