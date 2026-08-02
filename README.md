@@ -384,7 +384,7 @@ variables already present in the process environment.
 | Healthy check, successful diagnostic, or accepted restart request         | `0`       |
 | Degraded check, failed calibration, stale heartbeat, or rejected restart  | `1`       |
 | Measurement unavailable, discovery/reachability failure, or restart error | `2`       |
-| Invalid configuration or missing runtime dependency                       | `3`       |
+| Invalid configuration                                                     | `3`       |
 
 ---
 

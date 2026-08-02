@@ -10,7 +10,8 @@ import subprocess
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
-from devolo_watchdog.device import load_device_class
+from devolo_plc_api import Device
+
 from devolo_watchdog.models import (
     GatewayProbeResult,
     IperfSample,
@@ -288,10 +289,7 @@ async def async_probe_plc_phy(
 ) -> PlcPhyResult:
     """Query devolo device PLC network overview for PHY transmission rates."""
     if device_class is None:
-        try:
-            device_class = load_device_class()
-        except ImportError:
-            return PlcPhyResult(reachable=False, error="devolo_plc_api library not installed")
+        device_class = Device
         patch_devolo_device_interfaces(device_class)
 
     try:

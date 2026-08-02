@@ -15,9 +15,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from devolo_watchdog.actions import ActionDependencyError, read_password
+from devolo_plc_api import Device
+
+from devolo_watchdog.actions import read_password
 from devolo_watchdog.config import Settings, heartbeat_max_age_seconds_from_env
-from devolo_watchdog.device import load_device_class
 from devolo_watchdog.probes import probe_gateway
 from devolo_watchdog.runner import RestartPersistenceError, request_restart, run_daemon
 from devolo_watchdog.state import StateStore, check_heartbeat
@@ -313,11 +314,7 @@ def run_discover(
 ) -> int:
     """Discover devolo devices, firmware, and PHY link topology."""
     if device_class is None:
-        try:
-            device_class = load_device_class()
-        except ImportError:
-            _print_command_error("devolo_plc_api library is not installed", json_output)
-            return 3
+        device_class = Device
         from devolo_watchdog.probes import patch_devolo_device_interfaces
 
         patch_devolo_device_interfaces(device_class)
@@ -371,7 +368,7 @@ def run_restart(settings: Settings, json_output: bool) -> int:
         detail = f"Restart skipped for devolo device {settings.devolo_ip}: {exc}"
         _render_restart_result(settings, json_output, status="error", detail=detail)
         return 2
-    except (ActionDependencyError, ValueError) as exc:
+    except ValueError as exc:
         detail = f"Restart unavailable for devolo device {settings.devolo_ip}: {exc}"
         _render_restart_result(settings, json_output, status="error", detail=detail)
         return 3

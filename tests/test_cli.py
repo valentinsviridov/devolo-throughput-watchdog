@@ -19,7 +19,6 @@ from devolo_watchdog.__main__ import (
     run_doctor,
     run_restart,
 )
-from devolo_watchdog.actions import ActionDependencyError
 from devolo_watchdog.config import Settings
 from devolo_watchdog.runner import RestartPersistenceError
 
@@ -298,10 +297,10 @@ class CliParserTests(unittest.TestCase):
         settings = mock_run.call_args.args[0]
         self.assertEqual(settings.log_format, "json")
 
-    def test_run_discover_success(self):
+    @patch("devolo_watchdog.__main__.Device")
+    def test_run_discover_success(self, mock_device_cls):
         from unittest.mock import AsyncMock
 
-        mock_device_cls = MagicMock()
         mock_device = AsyncMock()
         mock_device_cls.return_value = mock_device
         mock_device.__aenter__.return_value = mock_device
@@ -321,15 +320,8 @@ class CliParserTests(unittest.TestCase):
         mock_device.plcnet.async_get_network_overview.return_value = mock_overview
 
         st = make_settings()
-        code = run_discover(st, json_output=True, device_class=mock_device_cls)
+        code = run_discover(st, json_output=True)
         self.assertEqual(code, 0)
-
-    @patch.dict("sys.modules", {"devolo_plc_api": None})
-    def test_run_discover_missing_library(self):
-        st = make_settings()
-        with patch("sys.stderr"):
-            code = run_discover(st, json_output=False)
-        self.assertEqual(code, 3)
 
     @patch("devolo_watchdog.__main__.time.time", return_value=123.0)
     @patch("devolo_watchdog.__main__.request_restart", return_value=True)
@@ -380,9 +372,9 @@ class CliParserTests(unittest.TestCase):
 
     @patch(
         "devolo_watchdog.__main__.request_restart",
-        side_effect=ActionDependencyError("devolo_plc_api library is not installed"),
+        side_effect=ValueError("DW_PASSWORD_FILE is empty (/run/secrets/devolo_password)"),
     )
-    def test_run_restart_missing_dependency_is_misconfigured(self, mock_restart):
+    def test_run_restart_invalid_password_file_is_misconfigured(self, mock_restart):
         stdout = io.StringIO()
 
         with redirect_stdout(stdout):

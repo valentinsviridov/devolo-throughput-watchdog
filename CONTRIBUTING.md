@@ -19,7 +19,6 @@ uv run dev-check
 - `policy.py`: pure classification and state-transition rules.
 - `runner.py`: scheduling, persistence, action orchestration, and signals.
 - `actions.py`: hardware-changing operations.
-- `device.py`: optional dependency loading for the devolo device implementation.
 - `state.py`: atomic state and heartbeat storage.
 - `__main__.py`: CLI parsing and diagnostic commands.
 

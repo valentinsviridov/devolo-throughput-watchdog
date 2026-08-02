@@ -258,8 +258,8 @@ class ProbeGatewayTests(unittest.TestCase):
 
 
 class PlcPhyProbeTests(unittest.TestCase):
-    def test_async_probe_plc_phy_success(self):
-        mock_device_cls = MagicMock()
+    @patch("devolo_watchdog.probes.Device")
+    def test_async_probe_plc_phy_success(self, mock_device_cls):
         mock_device = AsyncMock()
         mock_device_cls.return_value = mock_device
         mock_device.__aenter__.return_value = mock_device
@@ -287,7 +287,7 @@ class PlcPhyProbeTests(unittest.TestCase):
         mock_overview.data_rates = [rate1, rate2, unrelated_rate]
         mock_device.plcnet.async_get_network_overview.return_value = mock_overview
 
-        res = probe_plc_phy("192.168.1.20", "secret", device_class=mock_device_cls)
+        res = probe_plc_phy("192.168.1.20", "secret")
         self.assertTrue(res.reachable)
         self.assertEqual(res.rx_rate_mbps, 200.0)
         self.assertEqual(res.tx_rate_mbps, 220.0)

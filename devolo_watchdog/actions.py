@@ -7,14 +7,11 @@ import logging
 from pathlib import Path
 from typing import Any, cast
 
+from devolo_plc_api import Device
+
 from devolo_watchdog.config import Settings
-from devolo_watchdog.device import load_device_class
 
 LOG = logging.getLogger("devolo-throughput-watchdog")
-
-
-class ActionDependencyError(RuntimeError):
-    """A required dependency for a hardware action is unavailable."""
 
 
 def read_password(path: str | None) -> str | None:
@@ -37,10 +34,7 @@ async def async_restart_devolo(
 ) -> bool:
     """Reboot the specified devolo device asynchronously via its management API."""
     if device_class is None:
-        try:
-            device_class = load_device_class()
-        except ImportError:
-            raise ActionDependencyError("devolo_plc_api library is not installed") from None
+        device_class = Device
 
         from devolo_watchdog.probes import patch_devolo_device_interfaces
 

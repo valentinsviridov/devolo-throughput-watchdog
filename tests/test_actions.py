@@ -55,8 +55,8 @@ class PasswordFileTests(unittest.TestCase):
 
 
 class ActionsTests(unittest.TestCase):
-    def test_restart_devolo_success(self):
-        mock_device_cls = MagicMock()
+    @patch("devolo_watchdog.actions.Device")
+    def test_restart_devolo_success(self, mock_device_cls):
         mock_inst = MagicMock()
         mock_device_cls.return_value = mock_inst
         mock_inst.__aenter__.return_value = mock_inst
@@ -67,7 +67,7 @@ class ActionsTests(unittest.TestCase):
         mock_inst.device.async_restart = fake_restart
 
         cfg = make_settings()
-        self.assertTrue(restart_devolo(cfg, device_class=mock_device_cls))
+        self.assertTrue(restart_devolo(cfg))
 
     @patch("devolo_watchdog.actions.read_password")
     def test_restart_devolo_with_password(self, mock_pw):
@@ -96,10 +96,3 @@ class ActionsTests(unittest.TestCase):
         cfg = make_settings()
         with self.assertRaises(RuntimeError):
             restart_devolo(cfg, device_class=mock_device_cls)
-
-    @patch.dict("sys.modules", {"devolo_plc_api": None})
-    def test_restart_devolo_missing_library_raises_runtime_error(self):
-        cfg = make_settings()
-        with self.assertRaises(RuntimeError) as cm:
-            restart_devolo(cfg)
-        self.assertIn("devolo_plc_api library is not installed", str(cm.exception))
