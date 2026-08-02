@@ -24,7 +24,9 @@ COPY devolo_watchdog ./devolo_watchdog
 RUN uv sync --locked --no-editable --no-dev --no-cache
 
 # Run non-root user for container security
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+RUN useradd -m -u 1000 appuser && \
+    mkdir -p /var/lib/devolo-watchdog && \
+    chown -R appuser:appuser /app /var/lib/devolo-watchdog
 USER appuser
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \

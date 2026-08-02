@@ -80,9 +80,10 @@ class CliParserTests(unittest.TestCase):
 
         mock_ping.return_value = GatewayProbeResult(reachable=True)
         mock_plc.return_value = PlcPhyResult(reachable=True, rx_rate_mbps=200.0, tx_rate_mbps=200.0)
-        st = make_settings()
-        code = run_doctor(st, json_output=False)
-        self.assertEqual(code, 0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            st = make_settings(state_file=os.path.join(tmpdir, "state.json"))
+            code = run_doctor(st, json_output=False)
+            self.assertEqual(code, 0)
 
     @patch("devolo_watchdog.probes.probe_wan_iperf")
     def test_run_calibrate(self, mock_probe):

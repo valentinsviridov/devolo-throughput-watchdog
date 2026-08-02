@@ -135,6 +135,24 @@ def run_doctor(settings: Settings | None, json_output: bool) -> int:
             except ValueError as exc:
                 record("password_file", False, str(exc))
 
+        # State directory check
+        if settings.state_file:
+            from pathlib import Path
+
+            state_dir = Path(settings.state_file).parent
+            try:
+                state_dir.mkdir(parents=True, exist_ok=True)
+                test_file = state_dir / ".doctor_write_test"
+                test_file.touch()
+                test_file.unlink()
+                record("state_directory", True, f"Writable: {state_dir}")
+            except Exception as exc:
+                record(
+                    "state_directory",
+                    False,
+                    f"Directory '{state_dir}' is not writable: {exc}",
+                )
+
         # Gateway ping check
         gw = probe_gateway(
             settings.remote_probe, settings.ping_count, settings.ping_timeout_seconds
