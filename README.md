@@ -358,7 +358,6 @@ uv build
 | `DW_MIN_PLC_PHY_RATE_MBPS` | `50.0` | Minimum acceptable devolo PLC PHY RX/TX link rate |
 | `DW_MAX_REBOOTS_IN_WINDOW` | `3` | Max API attempts allowed within the moving window |
 | `DW_REBOOT_WINDOW_HOURS` | `6.0` | Time window hours for circuit breaker rate limiting |
-| `DW_MAX_REBOOT_ATTEMPTS` | `3` | Deprecated alias used only when `DW_MAX_REBOOTS_IN_WINDOW` is unset |
 | `DW_POST_REBOOT_DELAY_SECONDS` | `45` | Post-reboot delay before health verification |
 | `DW_STATE_FILE` | unset | Persistent state JSON path; Compose sets `/var/lib/devolo-watchdog/state.json` |
 | `DW_HEARTBEAT_FILE` | unset | Heartbeat JSON path; Compose sets `/tmp/watchdog_heartbeat` |

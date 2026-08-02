@@ -128,7 +128,6 @@ class SettingsValidationTests(unittest.TestCase):
             "DW_DEVOLO_IP": "192.168.1.20",
             "DW_MIN_UPLOAD_MBPS": "100",
             "DW_MIN_DOWNLOAD_MBPS": "100",
-            "DW_MAX_REBOOT_ATTEMPTS": "5",
             "DW_POST_REBOOT_DELAY_SECONDS": "60",
             "DW_LOG_FORMAT": "json",
         }
@@ -136,21 +135,9 @@ class SettingsValidationTests(unittest.TestCase):
             cfg = Settings.from_env()
             self.assertEqual(cfg.remote_probe, "192.168.1.1")
             self.assertEqual(cfg.devolo_ip, "192.168.1.20")
-            self.assertEqual(cfg.max_reboots_in_window, 5)
+            self.assertEqual(cfg.max_reboots_in_window, 3)
             self.assertEqual(cfg.post_reboot_delay_seconds, 60)
             self.assertEqual(cfg.log_format, "json")
-
-    def test_new_reboot_window_setting_takes_precedence_over_legacy_alias(self):
-        env = {
-            "DW_REMOTE_PROBE": "192.168.1.1",
-            "DW_DEVOLO_IP": "192.168.1.20",
-            "DW_MIN_UPLOAD_MBPS": "100",
-            "DW_MIN_DOWNLOAD_MBPS": "100",
-            "DW_MAX_REBOOT_ATTEMPTS": "ignored-invalid-value",
-            "DW_MAX_REBOOTS_IN_WINDOW": "4",
-        }
-        with patch.dict(os.environ, env, clear=True):
-            self.assertEqual(Settings.from_env().max_reboots_in_window, 4)
 
     def test_invalid_action_value_raises(self):
         env = {

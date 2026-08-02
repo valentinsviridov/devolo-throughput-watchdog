@@ -131,12 +131,6 @@ class Settings:
                 raise ValueError(f"Required environment variable {name} is missing")
             return value
 
-        max_reboots_raw = os.getenv("DW_MAX_REBOOTS_IN_WINDOW")
-        max_reboots_name = "DW_MAX_REBOOTS_IN_WINDOW"
-        if max_reboots_raw is None:
-            max_reboots_raw = os.getenv("DW_MAX_REBOOT_ATTEMPTS", "3")
-            max_reboots_name = "DW_MAX_REBOOT_ATTEMPTS"
-        max_reboots_in_window = _parse_int(max_reboots_raw, max_reboots_name)
         heartbeat_max_age_raw = os.getenv("DW_HEARTBEAT_MAX_AGE_SECONDS")
 
         return cls(
@@ -190,7 +184,10 @@ class Settings:
             reboot_window_hours=_parse_float(
                 os.getenv("DW_REBOOT_WINDOW_HOURS", "6.0"), "DW_REBOOT_WINDOW_HOURS"
             ),
-            max_reboots_in_window=max_reboots_in_window,
+            max_reboots_in_window=_parse_int(
+                os.getenv("DW_MAX_REBOOTS_IN_WINDOW", "3"),
+                "DW_MAX_REBOOTS_IN_WINDOW",
+            ),
             require_plc_evidence_for_reboot=_parse_bool(
                 os.getenv("DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT", "true"),
                 "DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT",
