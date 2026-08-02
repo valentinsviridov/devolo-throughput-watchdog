@@ -5,8 +5,6 @@ services:
     restart: unless-stopped
     read_only: true
     stop_grace_period: 30s
-    security_opt:
-      - "no-new-privileges:true"
     tmpfs:
       - /tmp
     cap_drop:

@@ -233,12 +233,45 @@ def probe_wan_iperf(
     )
 
 
+_DEVICE_INTERFACES_PATCHED = False
+
+
+def patch_devolo_device_interfaces() -> None:
+    """Fallback devolo_plc_api to non-loopback IPv4 interfaces if subnet matching is empty."""
+    global _DEVICE_INTERFACES_PATCHED
+    if _DEVICE_INTERFACES_PATCHED:
+        return
+    try:
+        from devolo_plc_api.device import Device
+        from ifaddr import get_adapters
+
+        orig_get_relevant = Device._get_relevant_interfaces
+
+        async def _patched_get_relevant_interfaces(self: Device) -> list[str]:
+            interfaces = await orig_get_relevant(self)
+            if not interfaces:
+                fallback: list[str] = []
+                for adapter in get_adapters():
+                    for ip in adapter.ips:
+                        if ip.is_IPv4 and str(ip.ip) not in {"127.0.0.1", "0.0.0.0"}:
+                            fallback.append(str(ip.ip))
+                return fallback
+            return interfaces
+
+        Device._get_relevant_interfaces = _patched_get_relevant_interfaces
+        _DEVICE_INTERFACES_PATCHED = True
+    except Exception:
+        pass
+
+
 async def async_probe_plc_phy(devolo_ip: str, password: str | None = None) -> PlcPhyResult:
     """Query devolo device PLC network overview for PHY transmission rates."""
     try:
         from devolo_plc_api import Device
     except ImportError:
         return PlcPhyResult(reachable=False, error="devolo_plc_api library not installed")
+
+    patch_devolo_device_interfaces()
 
     actual_password = password
     if password:
@@ -254,17 +287,24 @@ async def async_probe_plc_phy(devolo_ip: str, password: str | None = None) -> Pl
         if actual_password:
             device.password = actual_password
         async with device:
-            if device.plc is None:
+            plc_api = getattr(device, "plcnet", getattr(device, "plc", None))
+            if plc_api is None:
                 return PlcPhyResult(reachable=True, error="PLC API not supported by device")
 
-            overview = await device.plc.async_get_network_overview()
+            overview = await plc_api.async_get_network_overview()
             rx_rates: list[float] = []
             tx_rates: list[float] = []
-            for item in overview.devices:
-                if item.rx_rate:
-                    rx_rates.append(float(item.rx_rate))
-                if item.tx_rate:
-                    tx_rates.append(float(item.tx_rate))
+
+            data_items = list(getattr(overview, "data_rates", [])) or list(
+                getattr(overview, "devices", [])
+            )
+            for item in data_items:
+                rx = getattr(item, "rx_rate", None)
+                tx = getattr(item, "tx_rate", None)
+                if rx is not None and float(rx) > 0:
+                    rx_rates.append(float(rx))
+                if tx is not None and float(tx) > 0:
+                    tx_rates.append(float(tx))
 
             min_rx = min(rx_rates) if rx_rates else None
             min_tx = min(tx_rates) if tx_rates else None

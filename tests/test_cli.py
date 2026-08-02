@@ -35,6 +35,10 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.subcommand, "doctor")
         self.assertTrue(args.json)
 
+        args_before = parser.parse_args(["--json", "doctor"])
+        self.assertEqual(args_before.subcommand, "doctor")
+        self.assertTrue(args_before.json)
+
     def test_calibrate_subcommand_parsing(self):
         parser = build_parser()
         args = parser.parse_args(["calibrate", "--samples", "5"])
@@ -69,14 +73,16 @@ class CliParserTests(unittest.TestCase):
             self.assertEqual(main(), 0)
             mock_doctor.assert_called_once()
 
+    @patch("devolo_watchdog.probes.probe_plc_phy")
     @patch("devolo_watchdog.__main__.probe_gateway")
-    def test_run_doctor_checks(self, mock_ping):
-        from devolo_watchdog.models import GatewayProbeResult
+    def test_run_doctor_checks(self, mock_ping, mock_plc):
+        from devolo_watchdog.models import GatewayProbeResult, PlcPhyResult
 
         mock_ping.return_value = GatewayProbeResult(reachable=True)
+        mock_plc.return_value = PlcPhyResult(reachable=True, rx_rate_mbps=200.0, tx_rate_mbps=200.0)
         st = make_settings()
         code = run_doctor(st, json_output=False)
-        self.assertIn(code, (0, 1))
+        self.assertEqual(code, 0)
 
     @patch("devolo_watchdog.probes.probe_wan_iperf")
     def test_run_calibrate(self, mock_probe):

@@ -7,7 +7,8 @@ COPY --from=ghcr.io/astral-sh/uv:0.6.5 /uv /uvx /bin/
 RUN apt-get update && apt-get install -y --no-install-recommends \
     iperf3 \
     iputils-ping \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && chmod u+s /usr/bin/ping
 
 WORKDIR /app
 

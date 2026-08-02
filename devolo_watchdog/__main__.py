@@ -8,6 +8,7 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Sequence
 from typing import Any
 
 from devolo_watchdog.actions import read_password
@@ -19,11 +20,26 @@ from devolo_watchdog.state import check_heartbeat
 LOG = logging.getLogger("devolo-throughput-watchdog")
 
 
+class WatchdogArgumentParser(argparse.ArgumentParser):
+    """Custom ArgumentParser ensuring top-level flags like --json persist across subparsers."""
+
+    def parse_args(
+        self,
+        args: Sequence[str] | None = None,
+        namespace: argparse.Namespace | None = None,
+    ) -> argparse.Namespace:
+        args_list = list(sys.argv[1:] if args is None else args)
+        parsed = super().parse_args(args, namespace)
+        if "--json" in args_list:
+            parsed.json = True
+        return parsed
+
+
 def build_parser() -> argparse.ArgumentParser:
     common_parser = argparse.ArgumentParser(add_help=False)
     common_parser.add_argument("--json", action="store_true", help="output results in JSON format")
 
-    parser = argparse.ArgumentParser(
+    parser = WatchdogArgumentParser(
         prog="devolo-watchdog",
         description="Watchdog for devolo Magic 2 LAN adapters via iperf3 throughput probing.",
         parents=[common_parser],
@@ -163,6 +179,10 @@ def run_discover(settings: Settings, json_output: bool) -> int:
         return 3
 
     async def _discover() -> dict[str, Any]:
+        from devolo_watchdog.probes import patch_devolo_device_interfaces
+
+        patch_devolo_device_interfaces()
+
         device = Device(ip=settings.devolo_ip)
         if password := read_password(settings.password_file):
             device.password = password
@@ -173,19 +193,29 @@ def run_discover(settings: Settings, json_output: bool) -> int:
                 "mac": getattr(device, "mac", "unknown"),
             }
 
-            if device.plc:
+            plc_api = getattr(device, "plcnet", getattr(device, "plc", None))
+            if plc_api:
                 try:
-                    overview = await device.plc.async_get_network_overview()
+                    overview = await plc_api.async_get_network_overview()
                     info["devices"] = [
                         {
-                            "mac": d.mac,
+                            "mac": getattr(d, "mac_address", getattr(d, "mac", "")),
                             "user_device_name": getattr(d, "user_device_name", ""),
-                            "rx_rate": d.rx_rate,
-                            "tx_rate": d.tx_rate,
+                            "product_name": getattr(d, "product_name", ""),
                             "attached_to_router": getattr(d, "attached_to_router", False),
                         }
-                        for d in overview.devices
+                        for d in getattr(overview, "devices", [])
                     ]
+                    if hasattr(overview, "data_rates"):
+                        info["data_rates"] = [
+                            {
+                                "mac_address_from": getattr(rate, "mac_address_from", ""),
+                                "mac_address_to": getattr(rate, "mac_address_to", ""),
+                                "rx_rate": getattr(rate, "rx_rate", 0.0),
+                                "tx_rate": getattr(rate, "tx_rate", 0.0),
+                            }
+                            for rate in overview.data_rates
+                        ]
                 except Exception as exc:
                     info["plc_overview_error"] = str(exc)
 
@@ -203,9 +233,18 @@ def run_discover(settings: Settings, json_output: bool) -> int:
             if "devices" in data:
                 print("\nConnected PLC Nodes:")
                 for node in data["devices"]:
-                    rx = node["rx_rate"]
-                    tx = node["tx_rate"]
-                    print(f"  - MAC: {node['mac']}, RX: {rx} Mbps, TX: {tx} Mbps")
+                    name = node.get("product_name") or node.get("user_device_name") or ""
+                    detail = f" ({name})" if name else ""
+                    print(f"  - MAC: {node['mac']}{detail}")
+            if "data_rates" in data and data["data_rates"]:
+                print("\nPLC Transmission Rates:")
+                for rate in data["data_rates"]:
+                    rx = rate["rx_rate"]
+                    tx = rate["tx_rate"]
+                    print(
+                        f"  - {rate['mac_address_from']} -> {rate['mac_address_to']}: "
+                        f"RX: {rx:.1f} Mbps, TX: {tx:.1f} Mbps"
+                    )
         return 0
     except Exception as exc:
         print(f"Discovery failed: {exc}", file=sys.stderr)
@@ -289,8 +328,30 @@ def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> 
     return 0
 
 
+def _load_env_file_if_present() -> None:
+    from pathlib import Path
+
+    for filename in ("devolo-throughput-watchdog.env", ".env"):
+        path = Path(filename)
+        if path.is_file():
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, val = line.partition("=")
+                    key = key.strip()
+                    val = val.strip().strip("'\"")
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+            except Exception:
+                pass
+            break
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    _load_env_file_if_present()
     args = build_parser().parse_args()
 
     sub = args.subcommand

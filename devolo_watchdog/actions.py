@@ -28,12 +28,17 @@ async def async_restart_devolo(settings: Settings) -> bool:
     except ImportError:
         raise RuntimeError("devolo_plc_api library is not installed") from None
 
+    from devolo_watchdog.probes import patch_devolo_device_interfaces
+
+    patch_devolo_device_interfaces()
+
     device = Device(ip=settings.devolo_ip)
     if password := read_password(settings.password_file):
         device.password = password
     async with device:
         if device.device is None:
-            raise RuntimeError(f"Devolo device at {settings.devolo_ip} does not support Device API")
+            err = f"Devolo device at {settings.devolo_ip} does not support Device API"
+            raise RuntimeError(err)
         return await device.device.async_restart()
 
 
