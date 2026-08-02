@@ -293,16 +293,23 @@ def _render_discovery(data: dict[str, Any], json_output: bool) -> None:
             )
 
 
-def run_discover(settings: Settings, json_output: bool) -> int:
+def run_discover(
+    settings: Settings,
+    json_output: bool,
+    *,
+    device_class: Any | None = None,
+) -> int:
     """Discover devolo devices, firmware, and PHY link topology."""
-    try:
-        from devolo_plc_api import Device
-    except ImportError:
-        _print_command_error("devolo_plc_api library is not installed", json_output)
-        return 3
+    if device_class is None:
+        try:
+            from devolo_plc_api import Device
+        except ImportError:
+            _print_command_error("devolo_plc_api library is not installed", json_output)
+            return 3
+        device_class = Device
 
     try:
-        data = asyncio.run(_discover_device(settings, Device))
+        data = asyncio.run(_discover_device(settings, device_class))
     except Exception as exc:
         _print_command_error(str(exc), json_output, prefix="Discovery failed")
         return 2

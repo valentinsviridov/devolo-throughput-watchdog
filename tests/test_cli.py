@@ -122,7 +122,8 @@ class CliParserTests(unittest.TestCase):
         mock_plc.return_value = PlcPhyResult(reachable=True, rx_rate_mbps=200.0, tx_rate_mbps=200.0)
         with tempfile.TemporaryDirectory() as tmpdir:
             st = make_settings(state_file=os.path.join(tmpdir, "state.json"))
-            code = run_doctor(st, json_output=False)
+            with patch("shutil.which", side_effect=lambda command: f"/usr/bin/{command}"):
+                code = run_doctor(st, json_output=False)
             self.assertEqual(code, 0)
 
     @patch("devolo_watchdog.probes.probe_plc_phy")
@@ -133,8 +134,32 @@ class CliParserTests(unittest.TestCase):
         mock_ping.return_value = GatewayProbeResult(reachable=True)
         mock_plc.return_value = PlcPhyResult(reachable=True, rx_rate_mbps=200.0, tx_rate_mbps=200.0)
         st = make_settings()
-        code = run_doctor(st, json_output=True)
+        with patch("shutil.which", side_effect=lambda command: f"/usr/bin/{command}"):
+            code = run_doctor(st, json_output=True)
         self.assertEqual(code, 0)
+
+    @patch("devolo_watchdog.probes.probe_plc_phy")
+    @patch("devolo_watchdog.__main__.probe_gateway")
+    def test_run_doctor_reports_missing_iperf3(self, mock_ping, mock_plc):
+        from devolo_watchdog.models import GatewayProbeResult, PlcPhyResult
+
+        mock_ping.return_value = GatewayProbeResult(reachable=True)
+        mock_plc.return_value = PlcPhyResult(reachable=True, rx_rate_mbps=200.0, tx_rate_mbps=200.0)
+        stdout = io.StringIO()
+
+        def binary_path(command):
+            return None if command == "iperf3" else f"/usr/bin/{command}"
+
+        with patch("shutil.which", side_effect=binary_path), redirect_stdout(stdout):
+            code = run_doctor(make_settings(), json_output=True)
+
+        self.assertEqual(code, 1)
+        payload = json.loads(stdout.getvalue())
+        iperf_check = next(
+            check for check in payload["checks"] if check["check"] == "iperf3_binary"
+        )
+        self.assertFalse(iperf_check["passed"])
+        self.assertEqual(iperf_check["detail"], "not found on PATH")
 
     @patch("time.sleep")
     @patch("devolo_watchdog.probes.probe_wan_iperf")
@@ -241,10 +266,10 @@ class CliParserTests(unittest.TestCase):
         settings = mock_run.call_args.args[0]
         self.assertEqual(settings.log_format, "json")
 
-    @patch("devolo_plc_api.Device")
-    def test_run_discover_success(self, mock_device_cls):
+    def test_run_discover_success(self):
         from unittest.mock import AsyncMock
 
+        mock_device_cls = MagicMock()
         mock_device = AsyncMock()
         mock_device_cls.return_value = mock_device
         mock_device.__aenter__.return_value = mock_device
@@ -264,7 +289,7 @@ class CliParserTests(unittest.TestCase):
         mock_device.plcnet.async_get_network_overview.return_value = mock_overview
 
         st = make_settings()
-        code = run_discover(st, json_output=True)
+        code = run_discover(st, json_output=True, device_class=mock_device_cls)
         self.assertEqual(code, 0)
 
     @patch.dict("sys.modules", {"devolo_plc_api": None})
