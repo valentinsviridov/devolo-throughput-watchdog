@@ -56,6 +56,32 @@ def request_restart(
     return accepted
 
 
+def log_startup(settings: Settings, *, once: bool) -> None:
+    """Log an immediate startup event in the configured output format."""
+    mode = "once" if once else "daemon"
+    initial_delay = 0 if once else settings.initial_delay_seconds
+    if settings.log_format == "json":
+        LOG.info(
+            json.dumps(
+                {
+                    "timestamp": time.time(),
+                    "event": "watchdog_started",
+                    "mode": mode,
+                    "action": settings.action,
+                    "initial_delay_seconds": initial_delay,
+                }
+            )
+        )
+        return
+
+    LOG.info(
+        "watchdog started mode=%s action=%s initial_delay=%ds",
+        mode,
+        settings.action,
+        initial_delay,
+    )
+
+
 def log_result(
     result: CycleResult,
     failures: int,
@@ -252,6 +278,7 @@ def run_daemon(
     """Run the watchdog loop or execute a single check when once=True."""
     stop = threading.Event()
     _install_signal_handlers(stop)
+    log_startup(settings, once=once)
 
     store = StateStore(settings.state_file)
     state = store.load()

@@ -277,6 +277,9 @@ docker compose up -d
 docker compose logs -f
 ```
 
+The daemon writes a startup event immediately, before its configured initial delay and first measurement cycle, so
+`docker compose logs` confirms that the application launched without waiting for a throughput check to complete.
+
 ---
 
 ## CLI Command Reference

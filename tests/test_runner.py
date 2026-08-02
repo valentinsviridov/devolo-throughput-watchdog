@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -20,6 +21,7 @@ from devolo_watchdog.runner import (
     RestartPersistenceError,
     collect_measurement_report,
     log_result,
+    log_startup,
     request_restart,
     run_daemon,
 )
@@ -45,6 +47,28 @@ def make_settings(**kwargs) -> Settings:
 
 
 class LoggingAndCollectionTests(unittest.TestCase):
+    @patch.object(LOG, "info")
+    def test_log_startup_text_format(self, mock_log):
+        log_startup(make_settings(initial_delay_seconds=30), once=False)
+
+        log_template, *log_args = mock_log.call_args.args
+        rendered_log = log_template % tuple(log_args)
+        self.assertEqual(
+            rendered_log,
+            "watchdog started mode=daemon action=reboot initial_delay=30s",
+        )
+
+    @patch.object(LOG, "info")
+    def test_log_startup_json_format(self, mock_log):
+        log_startup(make_settings(log_format="json"), once=True)
+
+        payload = json.loads(mock_log.call_args.args[0])
+        self.assertEqual(payload["event"], "watchdog_started")
+        self.assertEqual(payload["mode"], "once")
+        self.assertEqual(payload["action"], "reboot")
+        self.assertEqual(payload["initial_delay_seconds"], 0)
+        self.assertIsInstance(payload["timestamp"], float)
+
     @patch.object(LOG, "info")
     def test_log_result_json_format(self, mock_log):
         res = CycleResult(
@@ -187,6 +211,19 @@ class RestartRequestTests(unittest.TestCase):
 
 
 class DaemonExecutionTests(unittest.TestCase):
+    @patch("devolo_watchdog.runner.log_startup")
+    @patch("devolo_watchdog.runner.collect_measurement_report")
+    def test_run_daemon_logs_startup(self, mock_collect, mock_startup):
+        mock_collect.return_value = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            wan_iperf=WanIperfResult(upload_mbps=150.0, download_mbps=150.0),
+        )
+        cfg = make_settings()
+
+        run_daemon(cfg, once=True)
+
+        mock_startup.assert_called_once_with(cfg, once=True)
+
     @patch("devolo_watchdog.runner.collect_measurement_report")
     def test_run_daemon_once_healthy(self, mock_collect):
         mock_collect.return_value = MeasurementReport(
