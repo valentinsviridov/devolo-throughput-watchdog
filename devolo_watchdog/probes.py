@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from devolo_watchdog.config import Settings
 
 LOG = logging.getLogger("devolo-throughput-watchdog")
+DeviceFactory = Callable[..., Any]
 
 
 class IperfError(RuntimeError):
@@ -285,15 +286,17 @@ async def async_probe_plc_phy(
     devolo_ip: str,
     password: str | None = None,
     *,
-    device_class: Any | None = None,
+    device_class: DeviceFactory | None = None,
 ) -> PlcPhyResult:
     """Query devolo device PLC network overview for PHY transmission rates."""
     if device_class is None:
-        device_class = Device
-        patch_devolo_device_interfaces(device_class)
+        device_factory: DeviceFactory = Device
+        patch_devolo_device_interfaces(device_factory)
+    else:
+        device_factory = device_class
 
     try:
-        device = device_class(ip=devolo_ip)
+        device = device_factory(ip=devolo_ip)
         if password:
             device.password = password
         async with device:
@@ -328,7 +331,7 @@ def probe_plc_phy(
     devolo_ip: str,
     password: str | None = None,
     *,
-    device_class: Any | None = None,
+    device_class: DeviceFactory | None = None,
 ) -> PlcPhyResult:
     """Synchronous wrapper for PLC PHY probing."""
     return asyncio.run(async_probe_plc_phy(devolo_ip, password, device_class=device_class))

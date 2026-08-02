@@ -323,6 +323,29 @@ class CliParserTests(unittest.TestCase):
         code = run_discover(st, json_output=True)
         self.assertEqual(code, 0)
 
+    def test_run_discover_rejects_suppressed_context_error(self):
+        class SuppressingDevice:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return True
+
+            @property
+            def serial_number(self):
+                raise RuntimeError("invalid device metadata")
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            code = run_discover(
+                make_settings(),
+                json_output=False,
+                device_class=lambda **_kwargs: SuppressingDevice(),
+            )
+
+        self.assertEqual(code, 2)
+        self.assertIn("context suppressed a discovery failure", stderr.getvalue())
+
     @patch("devolo_watchdog.__main__.time.time", return_value=123.0)
     @patch("devolo_watchdog.__main__.request_restart", return_value=True)
     def test_run_restart_uses_shared_restart_path(self, mock_restart, mock_time):

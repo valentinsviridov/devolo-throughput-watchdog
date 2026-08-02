@@ -96,3 +96,19 @@ class ActionsTests(unittest.TestCase):
         cfg = make_settings()
         with self.assertRaises(RuntimeError):
             restart_devolo(cfg, device_class=mock_device_cls)
+
+    def test_restart_devolo_rejects_suppressed_context_error(self):
+        class SuppressingDevice:
+            device = None
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return True
+
+        with self.assertRaisesRegex(RuntimeError, "context suppressed the restart failure"):
+            restart_devolo(
+                make_settings(),
+                device_class=lambda **_kwargs: SuppressingDevice(),
+            )

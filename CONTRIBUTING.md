@@ -9,6 +9,10 @@ uv sync --locked
 uv run dev-check
 ```
 
+Register and select `.venv/bin/python` through the IDE's Python interpreter settings. Merely editing
+the project SDK name does not register an IntelliJ SDK. The system interpreter does not contain the
+project's mandatory dependencies and will produce false unresolved-import reports.
+
 `dev-check` runs Ruff linting and formatting checks, mypy, and the pytest suite with branch coverage. Coverage below 80% fails the test command.
 
 ## Where changes belong

@@ -24,6 +24,7 @@ from devolo_watchdog.runner import RestartPersistenceError, request_restart, run
 from devolo_watchdog.state import StateStore, check_heartbeat
 
 LOG = logging.getLogger("devolo-throughput-watchdog")
+DeviceFactory = Callable[..., Any]
 
 
 class _PlcOverviewApi(Protocol):
@@ -241,8 +242,8 @@ def _print_command_error(message: str, json_output: bool, *, prefix: str = "Erro
         print(f"{prefix}: {message}", file=sys.stderr)
 
 
-async def _discover_device(settings: Settings, device_class: Any) -> dict[str, Any]:
-    device = device_class(ip=settings.devolo_ip)
+async def _discover_device(settings: Settings, device_factory: DeviceFactory) -> dict[str, Any]:
+    device = device_factory(ip=settings.devolo_ip)
     if password := read_password(settings.password_file):
         device.password = password
 
@@ -280,6 +281,7 @@ async def _discover_device(settings: Settings, device_class: Any) -> dict[str, A
         except Exception as exc:
             info["plc_overview_error"] = str(exc)
         return info
+    raise RuntimeError("Devolo device context suppressed a discovery failure")
 
 
 def _render_discovery(data: dict[str, Any], json_output: bool) -> None:
@@ -310,17 +312,19 @@ def run_discover(
     settings: Settings,
     json_output: bool,
     *,
-    device_class: Any | None = None,
+    device_class: DeviceFactory | None = None,
 ) -> int:
     """Discover devolo devices, firmware, and PHY link topology."""
     if device_class is None:
-        device_class = Device
+        device_factory: DeviceFactory = Device
         from devolo_watchdog.probes import patch_devolo_device_interfaces
 
-        patch_devolo_device_interfaces(device_class)
+        patch_devolo_device_interfaces(device_factory)
+    else:
+        device_factory = device_class
 
     try:
-        data = asyncio.run(_discover_device(settings, device_class))
+        data = asyncio.run(_discover_device(settings, device_factory))
     except Exception as exc:
         _print_command_error(str(exc), json_output, prefix="Discovery failed")
         return 2
