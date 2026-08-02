@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from devolo_watchdog.models import Status, WatchdogState
+from devolo_watchdog.models import CycleResult, Status, WatchdogState
 
 
 class ModelsTests(unittest.TestCase):
@@ -38,3 +38,19 @@ class ModelsTests(unittest.TestCase):
         self.assertEqual(state.recent_reboot_count(now, window_seconds=3600), 2)
         state.prune_history(now, max_age_seconds=5000)
         self.assertEqual(len(state.reboot_history), 2)
+
+    def test_cycle_result_to_dict(self):
+        res = CycleResult(
+            status=Status.HEALTHY,
+            reason="Good",
+            upload_mbps=150.0,
+            download_mbps=120.0,
+            upload_port=5201,
+            download_port=5202,
+            plc_rx_rate=300.0,
+            plc_tx_rate=250.0,
+        )
+        d = res.to_dict()
+        self.assertEqual(d["status"], "healthy")
+        self.assertEqual(d["upload_mbps"], 150.0)
+        self.assertEqual(d["plc_rx_rate"], 300.0)

@@ -24,6 +24,10 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         tf.close()
         os.replace(tf.name, path)
     except Exception:
+        try:
+            tf.close()
+        except OSError:
+            pass
         if os.path.exists(tf.name):
             try:
                 os.unlink(tf.name)

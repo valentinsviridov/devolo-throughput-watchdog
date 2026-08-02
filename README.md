@@ -150,6 +150,36 @@ stateDiagram-v2
 
 ---
 
+## PLC Evidence Requirement & PHY Rate Diagnostics (`DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT`)
+
+### Motivation: Why Low Throughput Alone Is Not Enough
+Measuring end-to-end throughput via `iperf3` tests your entire network path (local host -> devolo PLC adapter -> gateway router -> WAN/Internet -> target iperf3 server). A drop in measured throughput can easily be caused by external factors that have nothing to do with the devolo hardware:
+- Internet Service Provider (ISP) WAN congestion, line throttling, or routing degradations.
+- CPU saturation or bandwidth limitations on public `iperf3` test servers.
+- Wi-Fi channel interference or local LAN contention on upstream access points.
+
+Rebooting the devolo PowerLine adapter during an ISP outage or external server slowdown is ineffective, causes unnecessary local network disconnections (dropping active sessions), and subjects the device to hardware power-cycling wear. A reboot should **only** occur when there is explicit proof that the local PowerLine hardware link itself has degraded.
+
+### Why PLC PHY Rates Are a Reliable Measure
+Devolo Magic 2 LAN adapters rely on HomePlug AV2 / G.hn modems communicating over household electrical wiring. The devolo device management firmware continuously monitors the raw Physical Layer (PHY) transmission rates (in Mbit/s) between paired PowerLine adapters and exposes this telemetry via `devolo_plc_api`.
+
+- **Direct Hardware Link Telemetry**: PHY transmission rates measure signal strength, signal-to-noise ratio, and electrical noise across mains wiring. They reflect the actual physical health of the PowerLine bridge.
+- **Definitive Fault Isolation**: 
+  - If the devolo PLC PHY link reports strong transmission speeds (e.g. RX and TX >= `DW_MIN_PLC_PHY_RATE_MBPS`, such as 200+ Mbps) but `iperf3` throughput is low, the watchdog confirms the PowerLine bridge is functioning normally and the bottleneck lies upstream in the WAN/ISP path. The reboot is suppressed.
+  - If the devolo PLC PHY rate drops below `DW_MIN_PLC_PHY_RATE_MBPS` (default: 50.0 Mbps), the local PowerLine link is confirmed degraded, providing definitive hardware evidence to schedule a device reboot.
+
+### Policy Rules & Evaluation Matrix
+
+| WAN / iperf3 Throughput | PLC PHY Link Rate | `DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT` | Evaluation Status | Decision & Action |
+| --- | --- | --- | --- | --- |
+| **Normal** (>= Min Upload & Download) | **Healthy** (>= `DW_MIN_PLC_PHY_RATE_MBPS`) | `true` or `false` | `healthy` | Failure counter reset to 0 |
+| **Low** (< Min Upload or Download) | **Degraded** (< `DW_MIN_PLC_PHY_RATE_MBPS`) | `true` or `false` | `degraded` | Failure counter incremented toward reboot |
+| **Low** (< Min Upload or Download) | **Healthy** (>= `DW_MIN_PLC_PHY_RATE_MBPS`) | `true` or `false` | `measurement-unavailable` | Counter reset to 0 (Reboot suppressed: WAN/ISP issue) |
+| **Low** (< Min Upload or Download) | **Unqueried / Unavailable** | `true` (Default) | `measurement-unavailable` | Counter reset to 0 (Reboot suppressed: missing proof) |
+| **Low** (< Min Upload or Download) | **Unqueried / Unavailable** | `false` | `degraded` | Failure counter incremented toward reboot |
+
+---
+
 ## Quick Start via Docker Compose (Recommended)
 
 ### 1. Environment Setup

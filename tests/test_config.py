@@ -32,6 +32,20 @@ class PortTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_ports("5201-abc")
 
+    def test_invalid_port_non_numeric(self):
+        with self.assertRaises(ValueError):
+            parse_ports("invalid_port")
+
+    def test_empty_port_spec_raises(self):
+        with self.assertRaises(ValueError):
+            parse_ports("  ,  ")
+
+    def test_out_of_range_port_raises(self):
+        with self.assertRaises(ValueError):
+            parse_ports("0")
+        with self.assertRaises(ValueError):
+            parse_ports("70000")
+
     def test_direction_uses_different_rotated_ports(self):
         cfg = make_settings()
         forward = candidate_ports(cfg, False, now=0)
@@ -54,6 +68,38 @@ class SettingsValidationTests(unittest.TestCase):
                 max_reboot_attempts=0,  # Invalid!
             )
 
+    def test_empty_iperf_server_raises(self):
+        with self.assertRaises(ValueError) as cm:
+            make_settings(iperf_server="")
+        self.assertIn("DW_IPERF_SERVER cannot be empty", str(cm.exception))
+
+    def test_invalid_log_format_raises(self):
+        with self.assertRaises(ValueError) as cm:
+            make_settings(log_format="yaml")
+        self.assertIn("DW_LOG_FORMAT must be", str(cm.exception))
+
+    def test_invalid_test_bytes_format_raises(self):
+        with self.assertRaises(ValueError) as cm:
+            make_settings(test_bytes="invalid")
+        self.assertIn("DW_TEST_BYTES must look like", str(cm.exception))
+
+    def test_negative_or_nan_thresholds_raise(self):
+        with self.assertRaises(ValueError):
+            make_settings(min_upload_mbps=0.0)
+        with self.assertRaises(ValueError):
+            make_settings(min_download_mbps=-10.0)
+        with self.assertRaises(ValueError):
+            make_settings(min_upload_mbps=float("nan"))
+
+    def test_tries_exceeding_ports_count_raises(self):
+        with self.assertRaises(ValueError) as cm:
+            make_settings(iperf_ports=(5201, 5202), iperf_tries=5)
+        self.assertIn("DW_IPERF_TRIES cannot exceed", str(cm.exception))
+
+    def test_negative_delay_raises(self):
+        with self.assertRaises(ValueError):
+            make_settings(initial_delay_seconds=-1)
+
     def test_missing_required_env_var_raises(self):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(ValueError):
@@ -67,6 +113,7 @@ class SettingsValidationTests(unittest.TestCase):
             "DW_MIN_DOWNLOAD_MBPS": "100",
             "DW_MAX_REBOOT_ATTEMPTS": "5",
             "DW_POST_REBOOT_DELAY_SECONDS": "60",
+            "DW_LOG_FORMAT": "json",
         }
         with patch.dict(os.environ, env, clear=True):
             cfg = Settings.from_env()
@@ -74,6 +121,7 @@ class SettingsValidationTests(unittest.TestCase):
             self.assertEqual(cfg.devolo_ip, "192.168.1.20")
             self.assertEqual(cfg.max_reboot_attempts, 5)
             self.assertEqual(cfg.post_reboot_delay_seconds, 60)
+            self.assertEqual(cfg.log_format, "json")
 
     def test_invalid_action_value_raises(self):
         env = {

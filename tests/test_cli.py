@@ -3,9 +3,16 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
-from devolo_watchdog.__main__ import build_parser, main, run_calibrate, run_doctor
+from devolo_watchdog.__main__ import (
+    _load_env_file_if_present,
+    build_parser,
+    main,
+    run_calibrate,
+    run_discover,
+    run_doctor,
+)
 from devolo_watchdog.config import Settings
 
 
@@ -66,6 +73,22 @@ class CliParserTests(unittest.TestCase):
             with patch("sys.argv", ["devolo-watchdog", "--check-config"]):
                 self.assertEqual(main(), 0)
 
+    @patch("devolo_watchdog.__main__.probe_gateway")
+    def test_check_config_gateway_unreachable(self, mock_ping):
+        from devolo_watchdog.models import GatewayProbeResult
+
+        mock_ping.return_value = GatewayProbeResult(reachable=False, error="timeout")
+
+        env = {
+            "DW_REMOTE_PROBE": "192.168.1.1",
+            "DW_DEVOLO_IP": "192.168.1.20",
+            "DW_MIN_UPLOAD_MBPS": "100",
+            "DW_MIN_DOWNLOAD_MBPS": "100",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            with patch("sys.argv", ["devolo-watchdog", "--check-config"]):
+                self.assertEqual(main(), 2)
+
     @patch("devolo_watchdog.__main__.run_doctor")
     def test_doctor_main_execution(self, mock_doctor):
         mock_doctor.return_value = 0
@@ -85,17 +108,31 @@ class CliParserTests(unittest.TestCase):
             code = run_doctor(st, json_output=False)
             self.assertEqual(code, 0)
 
+    @patch("devolo_watchdog.probes.probe_plc_phy")
+    @patch("devolo_watchdog.__main__.probe_gateway")
+    def test_run_doctor_json_output(self, mock_ping, mock_plc):
+        from devolo_watchdog.models import GatewayProbeResult, PlcPhyResult
+
+        mock_ping.return_value = GatewayProbeResult(reachable=True)
+        mock_plc.return_value = PlcPhyResult(reachable=True, rx_rate_mbps=200.0, tx_rate_mbps=200.0)
+        st = make_settings()
+        code = run_doctor(st, json_output=True)
+        self.assertEqual(code, 0)
+
+    @patch("time.sleep")
     @patch("devolo_watchdog.probes.probe_wan_iperf")
-    def test_run_calibrate(self, mock_probe):
+    def test_run_calibrate(self, mock_probe, mock_sleep):
         from devolo_watchdog.models import WanIperfResult
 
         mock_probe.return_value = WanIperfResult(upload_mbps=150.0, download_mbps=120.0)
         st = make_settings()
         code = run_calibrate(st, samples_count=2, json_output=True)
         self.assertEqual(code, 0)
+        mock_sleep.assert_called_once_with(2)
 
+    @patch("time.sleep")
     @patch("devolo_watchdog.probes.probe_wan_iperf")
-    def test_run_calibrate_failure_with_error_reporting(self, mock_probe):
+    def test_run_calibrate_failure_with_error_reporting(self, mock_probe, mock_sleep):
         from devolo_watchdog.models import WanIperfResult
 
         mock_probe.return_value = WanIperfResult(
@@ -105,6 +142,7 @@ class CliParserTests(unittest.TestCase):
         with patch("sys.stderr"):
             code = run_calibrate(st, samples_count=2, json_output=False)
         self.assertEqual(code, 1)
+        mock_sleep.assert_called_once_with(2)
 
     def test_healthcheck_execution(self):
         with tempfile.NamedTemporaryFile("w+", delete=False) as tf:
@@ -119,3 +157,53 @@ class CliParserTests(unittest.TestCase):
         finally:
             if os.path.exists(hb_path):
                 os.unlink(hb_path)
+
+    @patch("devolo_plc_api.Device")
+    def test_run_discover_success(self, mock_device_cls):
+        from unittest.mock import AsyncMock
+
+        mock_device = AsyncMock()
+        mock_device_cls.return_value = mock_device
+        mock_device.__aenter__.return_value = mock_device
+        mock_device.serial_number = "123456"
+        mock_device.mac = "AA:BB:CC:DD:EE:FF"
+
+        mock_overview = MagicMock()
+        node = MagicMock(
+            mac_address="11:22:33:44:55:66",
+            user_device_name="Living Room",
+            product_name="Magic 2 LAN",
+            attached_to_router=False,
+        )
+        mock_overview.devices = [node]
+        mock_overview.data_rates = []
+
+        mock_device.plcnet.async_get_network_overview.return_value = mock_overview
+
+        st = make_settings()
+        code = run_discover(st, json_output=True)
+        self.assertEqual(code, 0)
+
+    @patch.dict("sys.modules", {"devolo_plc_api": None})
+    def test_run_discover_missing_library(self):
+        st = make_settings()
+        with patch("sys.stderr"):
+            code = run_discover(st, json_output=False)
+        self.assertEqual(code, 3)
+
+    def test_env_loader_parses_file(self):
+        with tempfile.NamedTemporaryFile("w+", delete=False, dir=".") as tf:
+            tf.write("# Comment\nDW_TEST_KEY=test_value\n")
+            tf.flush()
+            temp_name = os.path.basename(tf.name)
+
+        try:
+            with patch("pathlib.Path.is_file") as mock_is_file:
+                mock_is_file.return_value = True
+                with patch("pathlib.Path.read_text", return_value="DW_CUSTOM_ENV_VAR=loaded_ok\n"):
+                    _load_env_file_if_present()
+                    self.assertEqual(os.environ.get("DW_CUSTOM_ENV_VAR"), "loaded_ok")
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
+            os.environ.pop("DW_CUSTOM_ENV_VAR", None)

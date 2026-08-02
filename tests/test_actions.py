@@ -37,6 +37,13 @@ class PasswordFileTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             read_password("/path/to/non_existent_file.password")
 
+    @patch("pathlib.Path.read_text")
+    def test_permission_error_on_password_file_raises_value_error(self, mock_read):
+        mock_read.side_effect = PermissionError("Access denied")
+        with self.assertRaises(ValueError) as cm:
+            read_password("/etc/shadow_password")
+        self.assertIn("DW_PASSWORD_FILE unreadable", str(cm.exception))
+
 
 class ActionsTests(unittest.TestCase):
     @patch("devolo_plc_api.Device")
@@ -54,6 +61,23 @@ class ActionsTests(unittest.TestCase):
         self.assertTrue(restart_devolo(cfg))
 
     @patch("devolo_plc_api.Device")
+    @patch("devolo_watchdog.actions.read_password")
+    def test_restart_devolo_with_password(self, mock_pw, mock_device_cls):
+        mock_pw.return_value = "my_secret_pass"
+        mock_inst = MagicMock()
+        mock_device_cls.return_value = mock_inst
+        mock_inst.__aenter__.return_value = mock_inst
+
+        async def fake_restart():
+            return True
+
+        mock_inst.device.async_restart = fake_restart
+
+        cfg = make_settings(password_file="/tmp/pw.txt")
+        self.assertTrue(restart_devolo(cfg))
+        self.assertEqual(mock_inst.password, "my_secret_pass")
+
+    @patch("devolo_plc_api.Device")
     def test_restart_devolo_missing_device_api_raises(self, mock_device_cls):
         mock_inst = MagicMock()
         mock_device_cls.return_value = mock_inst
@@ -63,3 +87,10 @@ class ActionsTests(unittest.TestCase):
         cfg = make_settings()
         with self.assertRaises(RuntimeError):
             restart_devolo(cfg)
+
+    @patch.dict("sys.modules", {"devolo_plc_api": None})
+    def test_restart_devolo_missing_library_raises_runtime_error(self):
+        cfg = make_settings()
+        with self.assertRaises(RuntimeError) as cm:
+            restart_devolo(cfg)
+        self.assertIn("devolo_plc_api library is not installed", str(cm.exception))

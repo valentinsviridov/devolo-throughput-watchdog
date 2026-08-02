@@ -79,6 +79,85 @@ class PolicyEvaluationTests(unittest.TestCase):
         res = evaluate_report(report, st)
         self.assertEqual(res.status, Status.DEGRADED)
 
+    def test_wan_iperf_error_with_healthy_plc_phy_returns_unavailable(self):
+        st = make_settings()
+        report = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            plc_phy=PlcPhyResult(rx_rate_mbps=200.0, tx_rate_mbps=200.0),
+            wan_iperf=WanIperfResult(error="all candidate ports rejected"),
+        )
+        res = evaluate_report(report, st)
+        self.assertEqual(res.status, Status.UNAVAILABLE)
+        self.assertIn("local PLC link is verified healthy", res.reason)
+
+    def test_wan_iperf_error_without_plc_phy_returns_unavailable(self):
+        st = make_settings()
+        report = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            wan_iperf=WanIperfResult(error="connection refused"),
+        )
+        res = evaluate_report(report, st)
+        self.assertEqual(res.status, Status.UNAVAILABLE)
+        self.assertIn("iperf test failed/unavailable", res.reason)
+
+    def test_wan_slowness_without_plc_requirement_returns_degraded(self):
+        st = make_settings(require_plc_evidence_for_reboot=False)
+        report = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            wan_iperf=WanIperfResult(upload_mbps=10.0, download_mbps=10.0),
+        )
+        res = evaluate_report(report, st)
+        self.assertEqual(res.status, Status.DEGRADED)
+        self.assertIn("upload 10.0 < 100.0 Mbit/s", res.reason)
+
+    def test_wan_slowness_with_degraded_plc_phy_returns_degraded(self):
+        st = make_settings(min_plc_phy_rate_mbps=50.0)
+        report = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            plc_phy=PlcPhyResult(rx_rate_mbps=10.0, tx_rate_mbps=10.0),
+            wan_iperf=WanIperfResult(upload_mbps=10.0, download_mbps=10.0),
+        )
+        res = evaluate_report(report, st)
+        self.assertEqual(res.status, Status.DEGRADED)
+        self.assertIn("PLC PHY link rate degraded", res.reason)
+
+    def test_wan_nan_or_none_rates(self):
+        st = make_settings(require_plc_evidence_for_reboot=False)
+        report = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            wan_iperf=WanIperfResult(upload_mbps=None, download_mbps=float("nan")),
+        )
+        res = evaluate_report(report, st)
+        self.assertEqual(res.status, Status.DEGRADED)
+        self.assertIn("upload failed", res.reason)
+
+    def test_healthy_wan_iperf_returns_healthy(self):
+        st = make_settings()
+        report = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            wan_iperf=WanIperfResult(upload_mbps=150.0, download_mbps=120.0),
+        )
+        res = evaluate_report(report, st)
+        self.assertEqual(res.status, Status.HEALTHY)
+        self.assertIn("above configured thresholds", res.reason)
+
+    def test_no_iperf_healthy_plc_returns_healthy(self):
+        st = make_settings()
+        report = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            plc_phy=PlcPhyResult(rx_rate_mbps=200.0, tx_rate_mbps=200.0),
+        )
+        res = evaluate_report(report, st)
+        self.assertEqual(res.status, Status.HEALTHY)
+        self.assertIn("Local PLC link verified healthy", res.reason)
+
+    def test_no_iperf_no_plc_returns_unavailable(self):
+        st = make_settings()
+        report = MeasurementReport(gateway=GatewayProbeResult(reachable=True))
+        res = evaluate_report(report, st)
+        self.assertEqual(res.status, Status.UNAVAILABLE)
+        self.assertIn("No throughput tests were performed", res.reason)
+
 
 class TransitionTests(unittest.TestCase):
     def test_unavailable_resets_consecutive_failure_streak(self):
@@ -90,6 +169,27 @@ class TransitionTests(unittest.TestCase):
         new_state, action, _ = transition(state, result, st, now)
         self.assertEqual(new_state.consecutive_failures, 0)
         self.assertEqual(action, ActionType.NONE)
+
+    def test_healthy_resets_breaker_tripped(self):
+        st = make_settings(fail_limit=3)
+        state = WatchdogState(consecutive_failures=2, breaker_tripped=True)
+        now = 1000.0
+
+        result = CycleResult(status=Status.HEALTHY, reason="ok")
+        new_state, action, _ = transition(state, result, st, now)
+        self.assertFalse(new_state.breaker_tripped)
+        self.assertEqual(new_state.consecutive_failures, 0)
+        self.assertEqual(action, ActionType.NONE)
+
+    def test_action_log_when_fail_limit_reached(self):
+        st = make_settings(fail_limit=2, action="log")
+        state = WatchdogState(consecutive_failures=1)
+        now = 1000.0
+
+        result = CycleResult(status=Status.DEGRADED, reason="slow")
+        new_state, action, reason = transition(state, result, st, now)
+        self.assertEqual(action, ActionType.LOG)
+        self.assertIn("action=log", reason)
 
     def test_circuit_breaker_window_rate_limits_reboots(self):
         st = make_settings(fail_limit=1, max_reboots_in_window=3, reboot_window_hours=6.0)
