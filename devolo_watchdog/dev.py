@@ -31,3 +31,12 @@ def check() -> None:
     lint()
     print("\n=== Running Unit Tests ===")
     sys.exit(_run(["unittest", "discover", "-s", "tests"]))
+
+
+def reformat() -> None:
+    """Apply ruff code formatting and auto-fixable lint rules."""
+    print("=== Running Ruff Fixes ===")
+    _run(["ruff", "check", "--fix", "."])
+
+    print("\n=== Running Ruff Formatter ===")
+    sys.exit(_run(["ruff", "format", "."]))

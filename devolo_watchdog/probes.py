@@ -71,14 +71,39 @@ def probe_gateway(host: str, count: int = 2, timeout_seconds: int = 2) -> Gatewa
     try:
         result = subprocess.run(
             command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
             timeout=timeout,
             check=False,
         )
         if result.returncode == 0:
             return GatewayProbeResult(reachable=True)
-        return GatewayProbeResult(reachable=False, error=f"ping exit code {result.returncode}")
+
+        if result.returncode == 2:
+            # Fallback for ping implementations that do not support -W
+            # (or reject format/permissions)
+            fallback_command = ["ping", "-n", "-c", str(count), host]
+            fallback_result = subprocess.run(
+                fallback_command,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            if fallback_result.returncode == 0:
+                return GatewayProbeResult(reachable=True)
+
+            err_msg = (fallback_result.stderr or "").strip() or (result.stderr or "").strip()
+            detail = f": {err_msg}" if err_msg else ""
+            return GatewayProbeResult(
+                reachable=False, error=f"ping exit code {fallback_result.returncode}{detail}"
+            )
+
+        err_msg = (result.stderr or "").strip()
+        detail = f": {err_msg}" if err_msg else ""
+        return GatewayProbeResult(
+            reachable=False, error=f"ping exit code {result.returncode}{detail}"
+        )
     except FileNotFoundError:
         return GatewayProbeResult(reachable=False, error="ping binary missing on system")
     except subprocess.TimeoutExpired:
@@ -215,10 +240,20 @@ async def async_probe_plc_phy(devolo_ip: str, password: str | None = None) -> Pl
     except ImportError:
         return PlcPhyResult(reachable=False, error="devolo_plc_api library not installed")
 
+    actual_password = password
+    if password:
+        from devolo_watchdog.actions import read_password
+
+        try:
+            actual_password = read_password(password)
+        except Exception:
+            actual_password = password
+
     try:
-        async with Device(ip=devolo_ip) as device:
-            if password:
-                device.password = password
+        device = Device(ip=devolo_ip)
+        if actual_password:
+            device.password = actual_password
+        async with device:
             if device.plc is None:
                 return PlcPhyResult(reachable=True, error="PLC API not supported by device")
 

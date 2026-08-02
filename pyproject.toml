@@ -31,9 +31,11 @@ devolo-watchdog = "devolo_watchdog.__main__:main"
 dev-test = "devolo_watchdog.dev:test"
 dev-lint = "devolo_watchdog.dev:lint"
 dev-check = "devolo_watchdog.dev:check"
+dev-reformat = "devolo_watchdog.dev:reformat"
 test = "devolo_watchdog.dev:test"
 lint = "devolo_watchdog.dev:lint"
 check = "devolo_watchdog.dev:check"
+reformat = "devolo_watchdog.dev:reformat"
 
 [dependency-groups]
 dev = [

@@ -10,47 +10,46 @@ State transitions and circuit-breaker status are persisted atomically to a JSON 
 
 ```mermaid
 graph TD
-    subgraph Host ["Linux Host / Container (network_mode: host, non-root)"]
-        Daemon["devolo-watchdog Daemon / CLI"]
-        subgraph Package ["devolo_watchdog Package"]
-            Main["__main__.py (CLI Subcommands)"]
+    subgraph Host ["Linux Host / Container (network_mode: host)"]
+        direction TD
+        CLI["devolo-watchdog CLI / Daemon"]
+
+        subgraph Engine ["devolo_watchdog Package"]
+            direction TD
             Runner["runner.py (Loop & Signals)"]
-            Probes["probes.py (Typed Adapters)"]
-            Policy["policy.py (Pure Evaluation & State Transitions)"]
-            Models["models.py (Typed Reports & State)"]
-            State["state.py (Atomic File Store & Heartbeat)"]
+            State["state.py (State Store & Heartbeat)"]
+            Policy["policy.py (Pure Evaluation & Rules)"]
+            Probes["probes.py (ICMP, iperf3, PHY Adapters)"]
             Actions["actions.py (Devolo Device API)"]
-            Config["config.py (Settings & Validation)"]
         end
     end
 
-    subgraph Storage ["Persistent State Volume"]
-        StateFile["state.json (/var/lib/devolo-watchdog/state.json)"]
-        HeartbeatFile["watchdog_heartbeat (/tmp/watchdog_heartbeat)"]
+    subgraph Storage ["Persistent State Storage"]
+        direction TD
+        StateFile["state.json<br/>(/var/lib/devolo-watchdog/state.json)"]
+        HeartbeatFile["watchdog_heartbeat<br/>(/tmp/watchdog_heartbeat)"]
     end
 
-    subgraph LAN ["Local Subnet (PowerLine Network)"]
-        Gateway["Default Gateway Router\n(e.g., 192.168.1.1)"]
-        LocalIperf["Optional Local iperf3 Server\n(e.g., 192.168.1.100:5201)"]
-        Devolo["devolo Magic 2 LAN Adapter\n(e.g., 192.168.1.20)"]
+    subgraph TargetNetwork ["Network Targets & Hardware"]
+        direction TD
+        Gateway["Default Gateway Router<br/>(e.g., 192.168.1.1)"]
+        Devolo["devolo Magic 2 LAN Adapter<br/>(e.g., 192.168.1.20)"]
+        LocalIperf["Optional Local iperf3 Server<br/>(e.g., 192.168.1.100:5201)"]
+        PublicIperf["Public iperf3 Server Pool<br/>(e.g., iperf.example.com:5201-5205)"]
     end
 
-    subgraph WAN ["Internet / Public Net"]
-        PublicIperf["Public iperf3 Servers\n(e.g., iperf.example.com:5201-5205)"]
-    end
-
-    Main --> Runner
-    Runner --> Probes
-    Runner --> Policy
+    CLI --> Runner
     Runner --> State
+    Runner --> Policy
+    Runner --> Probes
     Runner --> Actions
-    Policy --> Models
+
     State --> StateFile
     State --> HeartbeatFile
 
     Probes -- "1. ICMP Ping Probe" --> Gateway
     Probes -- "2. Local PLC Speed Test" --> LocalIperf
-    Probes -- "3. PLC PHY Link Overview" --> Devolo
+    Probes -- "3. PLC PHY Link Query" --> Devolo
     Probes -- "4. Public WAN Throughput" --> PublicIperf
     Actions -- "5. devolo async_restart()" --> Devolo
 ```
@@ -60,58 +59,35 @@ graph TD
 ## Measurement Cycle Algorithm
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    actor Runner as Daemon Runner Loop
-    participant Probes as probes.py
-    participant Policy as policy.evaluate_report()
-    participant Transition as policy.transition()
-    participant Store as state.StateStore
-    participant Actions as actions.restart_devolo()
+graph TD
+    Start(["1. Start Measurement Cycle<br/>(runner.py)"]) --> ProbeStep["2. Execute Probes<br/>(network.py)<br/>• ICMP Ping Gateway<br/>• Optional Local Far-Side iperf3<br/>• Public WAN iperf3"]
 
-    Runner->>Probes: Probe Gateway (ICMP Ping)
-    alt Gateway Unreachable / Ping Binary Missing
-        Probes-->>Runner: GatewayProbeResult(reachable=False)
-    else Gateway Reachable
-        Probes-->>Runner: GatewayProbeResult(reachable=True)
-        opt Local iperf Server Configured
-            Runner->>Probes: Probe Local iperf3 (Upload & Download)
-            Probes-->>Runner: LocalIperfResult
-        end
-        opt Devolo IP Configured
-            Runner->>Probes: Query PLC PHY Rates (async_get_network_overview)
-            Probes-->>Runner: PlcPhyResult
-        end
-        Runner->>Probes: Probe WAN iperf3 (Rotated Candidate Ports)
-        Probes-->>Runner: WanIperfResult
-    end
+    ProbeStep --> EvalStep["3. Evaluate Cycle Health<br/>(core.py evaluate_cycle)<br/>• Validate math.isfinite() rates<br/>• Compare speeds vs min thresholds<br/>• Classify Status: HEALTHY, DEGRADED, UNAVAILABLE"]
 
-    Runner->>Policy: evaluate_report(MeasurementReport, Settings)
-    Policy-->>Runner: CycleResult(Status, reason, upload, download, ports)
+    EvalStep --> CheckStatus{"Status Result?"}
 
-    Runner->>Transition: transition(WatchdogState, CycleResult, Settings, now)
-    Transition-->>Runner: (updated_state, ActionType, action_reason)
+    CheckStatus -- "HEALTHY" --> ResetCounter["Reset Failures<br/>(failures = 0, reboot_attempts = 0)"]
+    CheckStatus -- "UNAVAILABLE" --> KeepCounter["Preserve Counter<br/>(WAN/ISP outage or public server busy)"]
+    CheckStatus -- "DEGRADED" --> IncCounter["Increment Failures<br/>(failures += 1)"]
 
-    Runner->>Store: save(updated_state)
+    IncCounter --> CheckFailLimit{"failures >= DW_FAIL_LIMIT?"}
+    CheckFailLimit -- "No" --> WaitInterval["Wait interval_seconds"]
 
-    alt ActionType == REBOOT
-        alt --once mode without --allow-action
-            Runner->>Runner: Log warning: Dry-run active (skip reboot)
-        else Reboot Allowed
-            Runner->>Store: record_reboot(now, accepted=False)
-            Runner->>Actions: restart_devolo(Settings)
-            alt Reboot Accepted
-                Actions-->>Runner: True
-                Runner->>Store: record_reboot(now, accepted=True)
-                Runner->>Runner: Wait post_reboot_delay_seconds
-                Runner->>Policy: Post-reboot Verification Probe
-            else Reboot Rejected / Error
-                Actions-->>Runner: False / Exception
-                Runner->>Runner: Log error (Attempt counted in state)
-            end
-        end
-    end
+    CheckFailLimit -- "Yes" --> CheckBreaker{"reboot_attempts < DW_MAX_REBOOT_ATTEMPTS?"}
+    CheckBreaker -- "No (Breaker Tripped)" --> LogBreaker["Log Circuit Breaker Active<br/>(Pause Reboots)"] --> WaitCooldown["Wait cooldown_seconds"]
+
+    CheckBreaker -- "Yes" --> RebootStep["4. Trigger Device Action<br/>(actions.py async_restart)<br/>• Call devolo async_restart()<br/>• Wait DW_POST_REBOOT_DELAY_SECONDS<br/>• Execute Post-Reboot Verification"]
+
+    RebootStep --> CheckVerify{"Verification Passed?"}
+    CheckVerify -- "Yes (HEALTHY)" --> ResetCounter
+    CheckVerify -- "No (DEGRADED / Error)" --> RetainFailures["Retain Failure Counter & Attempt"] --> WaitCooldown
+
+    ResetCounter --> WaitInterval
+    KeepCounter --> WaitInterval
+    WaitInterval --> Start
+    WaitCooldown --> Start
 ```
+
 
 ---
 
@@ -260,6 +236,10 @@ uv run devolo-watchdog run
 # Run linter and formatting checks
 uv run lint
 # Or: uv run dev-lint
+
+# Auto-format and fix code issues
+uv run reformat
+# Or: uv run dev-reformat
 
 # Run unit test suite
 uv run test

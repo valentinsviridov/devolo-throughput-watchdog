@@ -44,3 +44,25 @@ class SingleIperfCommandTests(unittest.TestCase):
         cmd = mock_run.call_args[0][0]
         self.assertIn("192.168.1.100", cmd)
         self.assertIn("--reverse", cmd)
+
+
+class ProbeGatewayTests(unittest.TestCase):
+    @patch("subprocess.run")
+    def test_probe_gateway_success(self, mock_run):
+        from devolo_watchdog.probes import probe_gateway
+
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        res = probe_gateway("192.168.1.1")
+        self.assertTrue(res.reachable)
+
+    @patch("subprocess.run")
+    def test_probe_gateway_fallback_on_exit_code_2(self, mock_run):
+        from devolo_watchdog.probes import probe_gateway
+
+        mock_run.side_effect = [
+            MagicMock(returncode=2, stderr="ping: invalid option -- 'W'"),
+            MagicMock(returncode=0, stderr=""),
+        ]
+        res = probe_gateway("192.168.1.1")
+        self.assertTrue(res.reachable)
+        self.assertEqual(mock_run.call_count, 2)

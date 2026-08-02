@@ -163,10 +163,10 @@ def run_discover(settings: Settings, json_output: bool) -> int:
         return 3
 
     async def _discover() -> dict[str, Any]:
-        async with Device(ip=settings.devolo_ip) as device:
-            if password := read_password(settings.password_file):
-                device.password = password
-
+        device = Device(ip=settings.devolo_ip)
+        if password := read_password(settings.password_file):
+            device.password = password
+        async with device:
             info = {
                 "ip": settings.devolo_ip,
                 "serial_number": getattr(device, "serial_number", "unknown"),
