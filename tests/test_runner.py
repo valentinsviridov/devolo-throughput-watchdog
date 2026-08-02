@@ -20,6 +20,7 @@ from devolo_watchdog.runner import (
     LOG,
     RestartPersistenceError,
     collect_measurement_report,
+    format_log_timestamp,
     log_result,
     log_startup,
     request_restart,
@@ -47,6 +48,9 @@ def make_settings(**kwargs) -> Settings:
 
 
 class LoggingAndCollectionTests(unittest.TestCase):
+    def test_format_log_timestamp_uses_iso_8601_utc(self):
+        self.assertEqual(format_log_timestamp(0.0), "1970-01-01T00:00:00.000Z")
+
     def test_log_startup_text_format(self):
         with self.assertLogs(LOG.name, level="INFO") as captured:
             log_startup(make_settings(initial_delay_seconds=30), once=False)
@@ -65,7 +69,8 @@ class LoggingAndCollectionTests(unittest.TestCase):
         self.assertEqual(payload["mode"], "once")
         self.assertEqual(payload["action"], "reboot")
         self.assertEqual(payload["initial_delay_seconds"], 0)
-        self.assertIsInstance(payload["timestamp"], float)
+        self.assertIsInstance(payload["timestamp"], str)
+        self.assertTrue(payload["timestamp"].endswith("Z"))
 
     def test_log_result_json_format(self):
         res = CycleResult(
@@ -79,9 +84,10 @@ class LoggingAndCollectionTests(unittest.TestCase):
         with self.assertLogs(LOG.name, level="INFO") as captured:
             log_result(res, failures=0, fail_limit=3, action=ActionType.NONE, log_format="json")
 
-        log_str = captured.records[0].getMessage()
-        self.assertIn('"status": "healthy"', log_str)
-        self.assertIn('"upload_mbps": 150.0', log_str)
+        payload = json.loads(captured.records[0].getMessage())
+        self.assertTrue(payload["timestamp"].endswith("Z"))
+        self.assertEqual(payload["status"], "healthy")
+        self.assertEqual(payload["metrics"]["upload_mbps"], 150.0)
 
     def test_log_result_text_omits_unknown_ports(self):
         result = CycleResult(

@@ -7,6 +7,7 @@ import logging
 import signal
 import threading
 import time
+from datetime import UTC, datetime
 
 from devolo_watchdog.actions import read_password, restart_devolo
 from devolo_watchdog.config import Settings, candidate_ports
@@ -30,6 +31,16 @@ LOG = logging.getLogger("devolo-throughput-watchdog")
 
 class RestartPersistenceError(RuntimeError):
     """A restart was skipped because its attempt could not be persisted safely."""
+
+
+def format_log_timestamp(epoch_seconds: float | None = None) -> str:
+    """Return an ISO 8601 UTC timestamp suitable for structured logs."""
+    timestamp = time.time() if epoch_seconds is None else epoch_seconds
+    return (
+        datetime.fromtimestamp(timestamp, tz=UTC)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def request_restart(
@@ -64,7 +75,7 @@ def log_startup(settings: Settings, *, once: bool) -> None:
         LOG.info(
             json.dumps(
                 {
-                    "timestamp": time.time(),
+                    "timestamp": format_log_timestamp(),
                     "event": "watchdog_started",
                     "mode": mode,
                     "action": settings.action,
@@ -92,7 +103,7 @@ def log_result(
     """Log cycle status and throughput values in text or structured JSON format."""
     if log_format == "json":
         data = {
-            "timestamp": time.time(),
+            "timestamp": format_log_timestamp(),
             "status": result.status.value,
             "reason": result.reason,
             "consecutive_failures": failures,
