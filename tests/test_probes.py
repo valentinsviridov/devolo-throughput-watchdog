@@ -258,8 +258,8 @@ class ProbeGatewayTests(unittest.TestCase):
 
 
 class PlcPhyProbeTests(unittest.TestCase):
-    @patch("devolo_plc_api.Device")
-    def test_async_probe_plc_phy_success(self, mock_device_cls):
+    def test_async_probe_plc_phy_success(self):
+        mock_device_cls = MagicMock()
         mock_device = AsyncMock()
         mock_device_cls.return_value = mock_device
         mock_device.__aenter__.return_value = mock_device
@@ -287,26 +287,25 @@ class PlcPhyProbeTests(unittest.TestCase):
         mock_overview.data_rates = [rate1, rate2, unrelated_rate]
         mock_device.plcnet.async_get_network_overview.return_value = mock_overview
 
-        res = probe_plc_phy("192.168.1.20", "secret")
+        res = probe_plc_phy("192.168.1.20", "secret", device_class=mock_device_cls)
         self.assertTrue(res.reachable)
         self.assertEqual(res.rx_rate_mbps, 200.0)
         self.assertEqual(res.tx_rate_mbps, 220.0)
         self.assertEqual(mock_device.password, "secret")
 
-    @patch("devolo_plc_api.Device")
-    def test_async_probe_plc_phy_missing_plc_api(self, mock_device_cls):
+    def test_async_probe_plc_phy_missing_plc_api(self):
+        mock_device_cls = MagicMock()
         mock_device = MagicMock()
         mock_device_cls.return_value = mock_device
         mock_device.__aenter__.return_value = mock_device
         mock_device.plcnet = None
-        mock_device.plc = None
 
-        res = probe_plc_phy("192.168.1.20")
+        res = probe_plc_phy("192.168.1.20", device_class=mock_device_cls)
         self.assertTrue(res.reachable)
         self.assertEqual(res.error, "PLC API not supported by device")
 
-    @patch("devolo_plc_api.Device")
-    def test_async_probe_plc_phy_filters_invalid_rate_values(self, mock_device_cls):
+    def test_async_probe_plc_phy_filters_invalid_rate_values(self):
+        mock_device_cls = MagicMock()
         mock_device = AsyncMock()
         mock_device_cls.return_value = mock_device
         mock_device.__aenter__.return_value = mock_device
@@ -327,16 +326,16 @@ class PlcPhyProbeTests(unittest.TestCase):
         overview = MagicMock(data_rates=[invalid_rate, valid_rate])
         mock_device.plcnet.async_get_network_overview.return_value = overview
 
-        res = probe_plc_phy("192.168.1.20")
+        res = probe_plc_phy("192.168.1.20", device_class=mock_device_cls)
 
         self.assertTrue(res.reachable)
         self.assertEqual(res.rx_rate_mbps, 125.5)
         self.assertEqual(res.tx_rate_mbps, 130.5)
 
-    @patch("devolo_plc_api.Device")
-    def test_async_probe_plc_phy_device_exception(self, mock_device_cls):
+    def test_async_probe_plc_phy_device_exception(self):
+        mock_device_cls = MagicMock()
         mock_device_cls.side_effect = RuntimeError("Connection timed out")
-        res = probe_plc_phy("192.168.1.20")
+        res = probe_plc_phy("192.168.1.20", device_class=mock_device_cls)
         self.assertFalse(res.reachable)
         self.assertEqual(res.error, "Connection timed out")
 
@@ -344,6 +343,14 @@ class PlcPhyProbeTests(unittest.TestCase):
 class PatchInterfacesTests(unittest.TestCase):
     @staticmethod
     def test_patch_devolo_device_interfaces():
-        patch_devolo_device_interfaces()
+        async def select_interfaces(_device):
+            return ["192.168.1.10"]
+
+        device_class = type(
+            "TestDevice",
+            (),
+            {"_get_relevant_interfaces": select_interfaces},
+        )
+        patch_devolo_device_interfaces(device_class)
         # Call again to exercise idempotent guard line
-        patch_devolo_device_interfaces()
+        patch_devolo_device_interfaces(device_class)

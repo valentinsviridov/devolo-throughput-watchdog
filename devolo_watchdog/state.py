@@ -14,7 +14,8 @@ from devolo_watchdog.models import WatchdogState
 LOG = logging.getLogger("devolo-throughput-watchdog")
 
 
-def _atomic_write_json(path: Path, data: dict) -> None:
+def atomic_write_json(path: Path, data: dict) -> None:
+    """Atomically replace a JSON file and clean up failed temporary writes."""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
     try:
@@ -58,7 +59,7 @@ class StateStore:
         if not self.path:
             return True
         try:
-            _atomic_write_json(self.path, state.to_dict())
+            atomic_write_json(self.path, state.to_dict())
             return True
         except Exception as exc:
             LOG.error("Failed to save state file (%s): %s", self.path, exc)
@@ -70,7 +71,7 @@ def write_heartbeat(path: str | Path, now: float | None = None) -> None:
     hb_path = Path(path)
     current_time = time.time() if now is None else now
     try:
-        _atomic_write_json(hb_path, {"heartbeat": current_time})
+        atomic_write_json(hb_path, {"heartbeat": current_time})
     except Exception as exc:
         LOG.warning("Failed to write heartbeat file (%s): %s", hb_path, exc)
 

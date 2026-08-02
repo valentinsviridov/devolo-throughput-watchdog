@@ -55,8 +55,8 @@ class PasswordFileTests(unittest.TestCase):
 
 
 class ActionsTests(unittest.TestCase):
-    @patch("devolo_plc_api.Device")
-    def test_restart_devolo_success(self, mock_device_cls):
+    def test_restart_devolo_success(self):
+        mock_device_cls = MagicMock()
         mock_inst = MagicMock()
         mock_device_cls.return_value = mock_inst
         mock_inst.__aenter__.return_value = mock_inst
@@ -67,12 +67,12 @@ class ActionsTests(unittest.TestCase):
         mock_inst.device.async_restart = fake_restart
 
         cfg = make_settings()
-        self.assertTrue(restart_devolo(cfg))
+        self.assertTrue(restart_devolo(cfg, device_class=mock_device_cls))
 
-    @patch("devolo_plc_api.Device")
     @patch("devolo_watchdog.actions.read_password")
-    def test_restart_devolo_with_password(self, mock_pw, mock_device_cls):
+    def test_restart_devolo_with_password(self, mock_pw):
         mock_pw.return_value = "my_secret_pass"
+        mock_device_cls = MagicMock()
         mock_inst = MagicMock()
         mock_device_cls.return_value = mock_inst
         mock_inst.__aenter__.return_value = mock_inst
@@ -83,11 +83,11 @@ class ActionsTests(unittest.TestCase):
         mock_inst.device.async_restart = fake_restart
 
         cfg = make_settings(password_file="/tmp/pw.txt")
-        self.assertTrue(restart_devolo(cfg))
+        self.assertTrue(restart_devolo(cfg, device_class=mock_device_cls))
         self.assertEqual(mock_inst.password, "my_secret_pass")
 
-    @patch("devolo_plc_api.Device")
-    def test_restart_devolo_missing_device_api_raises(self, mock_device_cls):
+    def test_restart_devolo_missing_device_api_raises(self):
+        mock_device_cls = MagicMock()
         mock_inst = MagicMock()
         mock_device_cls.return_value = mock_inst
         mock_inst.__aenter__.return_value = mock_inst
@@ -95,7 +95,7 @@ class ActionsTests(unittest.TestCase):
 
         cfg = make_settings()
         with self.assertRaises(RuntimeError):
-            restart_devolo(cfg)
+            restart_devolo(cfg, device_class=mock_device_cls)
 
     @patch.dict("sys.modules", {"devolo_plc_api": None})
     def test_restart_devolo_missing_library_raises_runtime_error(self):

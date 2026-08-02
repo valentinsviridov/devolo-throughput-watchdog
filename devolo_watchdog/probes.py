@@ -7,8 +7,10 @@ import json
 import logging
 import math
 import subprocess
-from typing import TYPE_CHECKING, cast
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, cast
 
+from devolo_watchdog.device import load_device_class
 from devolo_watchdog.models import (
     GatewayProbeResult,
     IperfSample,
@@ -22,20 +24,8 @@ if TYPE_CHECKING:
 LOG = logging.getLogger("devolo-throughput-watchdog")
 
 
-class ProbeError(Exception):
-    """Base exception for probe adapter errors."""
-
-
-class PingError(ProbeError):
-    """Ping command execution or environment error."""
-
-
-class IperfError(ProbeError):
+class IperfError(RuntimeError):
     """Iperf3 execution error."""
-
-
-class PlcApiError(ProbeError):
-    """Devolo PLC API query error."""
 
 
 def parse_iperf_mbps(payload: str) -> float:
@@ -221,23 +211,26 @@ def probe_wan_iperf(
 _DEVICE_INTERFACES_PATCHED = False
 
 
-def patch_devolo_device_interfaces() -> None:
+def patch_devolo_device_interfaces(device_class: Any) -> None:
     """Fallback devolo_plc_api to non-loopback IPv4 interfaces if subnet matching is empty."""
     global _DEVICE_INTERFACES_PATCHED
     if _DEVICE_INTERFACES_PATCHED:
         return
     try:
-        from devolo_plc_api.device import Device
         from ifaddr import get_adapters
 
         interface_selector_name = "_get_relevant_interfaces"
-        orig_get_relevant = getattr(Device, interface_selector_name, None)
+        orig_get_relevant = getattr(device_class, interface_selector_name, None)
         if not callable(orig_get_relevant):
             LOG.debug("devolo Device has no interface-selection hook to patch")
             return
+        get_relevant_interfaces = cast(
+            Callable[[object], Awaitable[list[str]]],
+            orig_get_relevant,
+        )
 
         async def _patched_get_relevant_interfaces(self: object) -> list[str]:
-            interfaces = cast(list[str], await orig_get_relevant(self))
+            interfaces = await get_relevant_interfaces(self)
             if not interfaces:
                 fallback: list[str] = []
                 for adapter in get_adapters():
@@ -247,7 +240,7 @@ def patch_devolo_device_interfaces() -> None:
                 return fallback
             return interfaces
 
-        setattr(Device, interface_selector_name, _patched_get_relevant_interfaces)
+        setattr(device_class, interface_selector_name, _patched_get_relevant_interfaces)
         _DEVICE_INTERFACES_PATCHED = True
     except Exception as exc:
         LOG.debug("Unable to install devolo interface fallback: %s", exc)
@@ -287,30 +280,30 @@ def _rates_for_device(data_rates: list[object], device_mac: object) -> list[obje
     return matching_rates or data_rates
 
 
-async def async_probe_plc_phy(devolo_ip: str, password: str | None = None) -> PlcPhyResult:
+async def async_probe_plc_phy(
+    devolo_ip: str,
+    password: str | None = None,
+    *,
+    device_class: Any | None = None,
+) -> PlcPhyResult:
     """Query devolo device PLC network overview for PHY transmission rates."""
-    try:
-        from devolo_plc_api import Device
-    except ImportError:
-        return PlcPhyResult(reachable=False, error="devolo_plc_api library not installed")
+    if device_class is None:
+        try:
+            device_class = load_device_class()
+        except ImportError:
+            return PlcPhyResult(reachable=False, error="devolo_plc_api library not installed")
+        patch_devolo_device_interfaces(device_class)
 
-    patch_devolo_device_interfaces()
-
     try:
-        device = Device(ip=devolo_ip)
+        device = device_class(ip=devolo_ip)
         if password:
             device.password = password
         async with device:
-            plc_api = getattr(device, "plcnet", None)
-            if plc_api is None:
-                plc_api = getattr(device, "plc", None)
+            plc_api = device.plcnet
             if plc_api is None:
                 return PlcPhyResult(reachable=True, error="PLC API not supported by device")
 
-            get_overview = getattr(plc_api, "async_get_network_overview", None)
-            if not callable(get_overview):
-                return PlcPhyResult(reachable=True, error="PLC network overview is not supported")
-            overview = await get_overview()
+            overview = await plc_api.async_get_network_overview()
             rx_rates: list[float] = []
             tx_rates: list[float] = []
 
@@ -333,6 +326,11 @@ async def async_probe_plc_phy(devolo_ip: str, password: str | None = None) -> Pl
         return PlcPhyResult(reachable=False, error=str(exc))
 
 
-def probe_plc_phy(devolo_ip: str, password: str | None = None) -> PlcPhyResult:
+def probe_plc_phy(
+    devolo_ip: str,
+    password: str | None = None,
+    *,
+    device_class: Any | None = None,
+) -> PlcPhyResult:
     """Synchronous wrapper for PLC PHY probing."""
-    return asyncio.run(async_probe_plc_phy(devolo_ip, password))
+    return asyncio.run(async_probe_plc_phy(devolo_ip, password, device_class=device_class))

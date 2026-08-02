@@ -10,16 +10,23 @@ import math
 import os
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import replace
-from typing import Any
+from pathlib import Path
+from typing import Any, Protocol, cast
 
 from devolo_watchdog.actions import ActionDependencyError, read_password
 from devolo_watchdog.config import Settings, heartbeat_max_age_seconds_from_env
+from devolo_watchdog.device import load_device_class
 from devolo_watchdog.probes import probe_gateway
 from devolo_watchdog.runner import RestartPersistenceError, request_restart, run_daemon
 from devolo_watchdog.state import StateStore, check_heartbeat
 
 LOG = logging.getLogger("devolo-throughput-watchdog")
+
+
+class _PlcOverviewApi(Protocol):
+    async def async_get_network_overview(self) -> Any: ...
 
 
 def _positive_int(value: str) -> int:
@@ -34,6 +41,15 @@ def _positive_float(value: str) -> float:
     if not math.isfinite(parsed) or parsed <= 0:
         raise argparse.ArgumentTypeError("must be finite and greater than zero")
     return parsed
+
+
+def find_executable(name: str) -> str | None:
+    """Find an executable on PATH for the Linux runtime diagnostics."""
+    for directory in os.get_exec_path():
+        candidate = Path(directory or os.curdir) / name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,9 +67,13 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common_parser],
     )
 
-    subparsers = parser.add_subparsers(dest="subcommand", help="available subcommands")
+    subparsers = parser.add_subparsers(
+        dest="subcommand",
+        required=True,
+        help="available subcommands",
+    )
 
-    # run / default
+    # run
     run_parser = subparsers.add_parser(
         "run", parents=[common_parser], help="run watchdog daemon or single check"
     )
@@ -108,11 +128,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="maximum heartbeat age (default: twice DW_INTERVAL_SECONDS, minimum 90)",
     )
 
-    # Top-level backwards compatibility flags
-    parser.add_argument("--once", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--allow-action", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--check-config", action="store_true", help=argparse.SUPPRESS)
-
     return parser
 
 
@@ -132,6 +147,8 @@ def run_doctor(
     settings: Settings | None,
     json_output: bool,
     configuration_error: str | None = None,
+    *,
+    executable_finder: Callable[[str], str | None] | None = None,
 ) -> int:
     """Perform diagnostic checks on runtime environment and devolo device."""
     results: list[dict[str, Any]] = []
@@ -145,12 +162,11 @@ def run_doctor(
     record("python_version", py_ok, f"Python {py_ver} (requires >= 3.11)")
 
     # System binaries
-    import shutil
-
-    iperf_bin = shutil.which("iperf3")
+    finder = executable_finder or find_executable
+    iperf_bin = finder("iperf3")
     record("iperf3_binary", bool(iperf_bin), iperf_bin or "not found on PATH")
 
-    ping_bin = shutil.which("ping")
+    ping_bin = finder("ping")
     record("ping_binary", bool(ping_bin), ping_bin or "not found on PATH")
 
     # Config
@@ -178,8 +194,6 @@ def run_doctor(
 
         # State directory check
         if settings.state_file:
-            from pathlib import Path
-
             state_dir = Path(settings.state_file).parent
             try:
                 state_dir.mkdir(parents=True, exist_ok=True)
@@ -227,9 +241,6 @@ def _print_command_error(message: str, json_output: bool, *, prefix: str = "Erro
 
 
 async def _discover_device(settings: Settings, device_class: Any) -> dict[str, Any]:
-    from devolo_watchdog.probes import patch_devolo_device_interfaces
-
-    patch_devolo_device_interfaces()
     device = device_class(ip=settings.devolo_ip)
     if password := read_password(settings.password_file):
         device.password = password
@@ -240,9 +251,10 @@ async def _discover_device(settings: Settings, device_class: Any) -> dict[str, A
             "serial_number": getattr(device, "serial_number", "unknown"),
             "mac": getattr(device, "mac", "unknown"),
         }
-        plc_api = getattr(device, "plcnet", getattr(device, "plc", None))
-        if plc_api is None:
+        plc_api_value = getattr(device, "plcnet", None)
+        if plc_api_value is None:
             return info
+        plc_api = cast(_PlcOverviewApi, plc_api_value)
         try:
             overview = await plc_api.async_get_network_overview()
             info["devices"] = [
@@ -302,11 +314,13 @@ def run_discover(
     """Discover devolo devices, firmware, and PHY link topology."""
     if device_class is None:
         try:
-            from devolo_plc_api import Device
+            device_class = load_device_class()
         except ImportError:
             _print_command_error("devolo_plc_api library is not installed", json_output)
             return 3
-        device_class = Device
+        from devolo_watchdog.probes import patch_devolo_device_interfaces
+
+        patch_devolo_device_interfaces(device_class)
 
     try:
         data = asyncio.run(_discover_device(settings, device_class))
@@ -479,9 +493,8 @@ def run_calibrate(settings: Settings, samples_count: int, json_output: bool) -> 
     return 0
 
 
-def _load_env_file_if_present() -> None:
-    from pathlib import Path
-
+def load_env_file_if_present() -> None:
+    """Load the first supported local environment file without overriding process values."""
     for filename in ("devolo-throughput-watchdog.env", ".env"):
         path = Path(filename)
         if path.is_file():
@@ -585,11 +598,17 @@ def _run_configured_command(
     json_output: bool,
 ) -> int:
     sub = args.subcommand
-    if json_output and sub in {None, "run"}:
+    if json_output and sub == "run":
         settings = replace(settings, log_format="json")
 
-    if getattr(args, "check_config", False):
-        return _run_configuration_check(settings, json_output)
+    if sub == "run":
+        if args.check_config:
+            return _run_configuration_check(settings, json_output)
+        return run_daemon(
+            settings,
+            once=args.once,
+            allow_action=args.allow_action,
+        )
     if sub == "doctor":
         return run_doctor(settings, json_output)
     if sub == "discover":
@@ -597,13 +616,9 @@ def _run_configured_command(
     if sub == "restart":
         return run_restart(settings, json_output)
     if sub == "calibrate":
-        return run_calibrate(settings, getattr(args, "samples", 3), json_output)
+        return run_calibrate(settings, args.samples, json_output)
 
-    return run_daemon(
-        settings,
-        once=getattr(args, "once", False),
-        allow_action=getattr(args, "allow_action", False),
-    )
+    raise ValueError(f"unsupported command: {sub}")
 
 
 def main() -> int:
@@ -611,12 +626,10 @@ def main() -> int:
     sub = args.subcommand
     json_output = getattr(args, "json", False)
     log_format = (
-        "%(message)s"
-        if json_output and sub in {None, "run"}
-        else "%(asctime)s %(levelname)s %(message)s"
+        "%(message)s" if json_output and sub == "run" else "%(asctime)s %(levelname)s %(message)s"
     )
     logging.basicConfig(level=logging.INFO, format=log_format)
-    _load_env_file_if_present()
+    load_env_file_if_present()
 
     if sub == "healthcheck":
         return _run_healthcheck(args, json_output)

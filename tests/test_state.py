@@ -3,10 +3,11 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from devolo_watchdog.models import Status, WatchdogState
-from devolo_watchdog.state import StateStore, _atomic_write_json, check_heartbeat, write_heartbeat
+from devolo_watchdog.state import StateStore, check_heartbeat, write_heartbeat
 
 
 class StateStoreTests(unittest.TestCase):
@@ -60,7 +61,7 @@ class StateStoreTests(unittest.TestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
-    @patch("devolo_watchdog.state._atomic_write_json")
+    @patch("devolo_watchdog.state.atomic_write_json")
     def test_save_exception_logged_gracefully(self, mock_write):
         mock_write.side_effect = PermissionError("Disk full or permission denied")
         store = StateStore("/tmp/some_state.json")
@@ -69,13 +70,13 @@ class StateStoreTests(unittest.TestCase):
         self.assertFalse(store.save(state))
 
     def test_atomic_write_json_cleanup_on_error(self):
-        from pathlib import Path
-
         with tempfile.TemporaryDirectory() as tmpdir:
             target_path = Path(tmpdir) / "target.json"
             with patch("json.dump", side_effect=RuntimeError("JSON serialization error")):
-                with self.assertRaises(RuntimeError):
-                    _atomic_write_json(target_path, {"key": "val"})
+                self.assertFalse(StateStore(target_path).save(WatchdogState()))
+
+            self.assertFalse(target_path.exists())
+            self.assertEqual(list(Path(tmpdir).iterdir()), [])
 
     def test_heartbeat_write_and_check(self):
         with tempfile.NamedTemporaryFile("w+", delete=False) as tf:
@@ -106,7 +107,7 @@ class StateStoreTests(unittest.TestCase):
             if os.path.exists(path):
                 os.unlink(path)
 
-    @patch("devolo_watchdog.state._atomic_write_json")
+    @patch("devolo_watchdog.state.atomic_write_json")
     def test_write_heartbeat_exception_logged_gracefully(self, mock_write):
         mock_write.side_effect = OSError("Disk write error")
         # Should log warning without raising

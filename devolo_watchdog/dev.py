@@ -6,27 +6,28 @@ import subprocess
 import sys
 
 
-def _run(cmd: list[str]) -> int:
+def run_command(cmd: list[str]) -> int:
+    """Run a development command with the active Python interpreter."""
     return subprocess.call([sys.executable, "-m", *cmd])
 
 
 def test() -> None:
     """Run the test suite with configured branch coverage."""
-    sys.exit(_run(["pytest"]))
+    sys.exit(run_command(["pytest"]))
 
 
 def lint() -> None:
     """Run ruff linter, formatting checks, and mypy type check."""
     print("=== Running Ruff Linter ===")
-    if lint_code := _run(["ruff", "check", "."]):
+    if lint_code := run_command(["ruff", "check", "."]):
         sys.exit(lint_code)
 
     print("\n=== Running Ruff Format Check ===")
-    if fmt_code := _run(["ruff", "format", "--check", "."]):
+    if fmt_code := run_command(["ruff", "format", "--check", "."]):
         sys.exit(fmt_code)
 
     print("\n=== Running Mypy Type Check ===")
-    if type_code := _run(["mypy", "devolo_watchdog"]):
+    if type_code := run_command(["mypy", "devolo_watchdog"]):
         sys.exit(type_code)
 
 
@@ -35,13 +36,13 @@ def check() -> None:
     lint()
 
     print("\n=== Running Tests with Coverage ===")
-    sys.exit(_run(["pytest"]))
+    sys.exit(run_command(["pytest"]))
 
 
 def reformat() -> None:
     """Apply ruff code formatting and auto-fixable lint rules."""
     print("=== Running Ruff Fixes ===")
-    _run(["ruff", "check", "--fix", "."])
+    run_command(["ruff", "check", "--fix", "."])
 
     print("\n=== Running Ruff Formatter ===")
-    sys.exit(_run(["ruff", "format", "."]))
+    sys.exit(run_command(["ruff", "format", "."]))

@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from typing import Any, cast
 
 from devolo_watchdog.config import Settings
+from devolo_watchdog.device import load_device_class
 
 LOG = logging.getLogger("devolo-throughput-watchdog")
 
@@ -28,27 +30,32 @@ def read_password(path: str | None) -> str | None:
     return password
 
 
-async def async_restart_devolo(settings: Settings) -> bool:
+async def async_restart_devolo(
+    settings: Settings,
+    *,
+    device_class: Any | None = None,
+) -> bool:
     """Reboot the specified devolo device asynchronously via its management API."""
-    try:
-        from devolo_plc_api import Device
-    except ImportError:
-        raise ActionDependencyError("devolo_plc_api library is not installed") from None
+    if device_class is None:
+        try:
+            device_class = load_device_class()
+        except ImportError:
+            raise ActionDependencyError("devolo_plc_api library is not installed") from None
 
-    from devolo_watchdog.probes import patch_devolo_device_interfaces
+        from devolo_watchdog.probes import patch_devolo_device_interfaces
 
-    patch_devolo_device_interfaces()
+        patch_devolo_device_interfaces(device_class)
 
-    device = Device(ip=settings.devolo_ip)
+    device = device_class(ip=settings.devolo_ip)
     if password := read_password(settings.password_file):
         device.password = password
     async with device:
         if device.device is None:
             err = f"Devolo device at {settings.devolo_ip} does not support Device API"
             raise RuntimeError(err)
-        return await device.device.async_restart()
+        return cast(bool, await device.device.async_restart())
 
 
-def restart_devolo(settings: Settings) -> bool:
+def restart_devolo(settings: Settings, *, device_class: Any | None = None) -> bool:
     """Reboot the specified devolo device via its management API."""
-    return asyncio.run(async_restart_devolo(settings))
+    return asyncio.run(async_restart_devolo(settings, device_class=device_class))

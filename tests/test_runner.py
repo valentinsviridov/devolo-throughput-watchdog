@@ -47,30 +47,27 @@ def make_settings(**kwargs) -> Settings:
 
 
 class LoggingAndCollectionTests(unittest.TestCase):
-    @patch.object(LOG, "info")
-    def test_log_startup_text_format(self, mock_log):
-        log_startup(make_settings(initial_delay_seconds=30), once=False)
+    def test_log_startup_text_format(self):
+        with self.assertLogs(LOG.name, level="INFO") as captured:
+            log_startup(make_settings(initial_delay_seconds=30), once=False)
 
-        log_template, *log_args = mock_log.call_args.args
-        rendered_log = log_template % tuple(log_args)
         self.assertEqual(
-            rendered_log,
+            captured.records[0].getMessage(),
             "watchdog started mode=daemon action=reboot initial_delay=30s",
         )
 
-    @patch.object(LOG, "info")
-    def test_log_startup_json_format(self, mock_log):
-        log_startup(make_settings(log_format="json"), once=True)
+    def test_log_startup_json_format(self):
+        with self.assertLogs(LOG.name, level="INFO") as captured:
+            log_startup(make_settings(log_format="json"), once=True)
 
-        payload = json.loads(mock_log.call_args.args[0])
+        payload = json.loads(captured.records[0].getMessage())
         self.assertEqual(payload["event"], "watchdog_started")
         self.assertEqual(payload["mode"], "once")
         self.assertEqual(payload["action"], "reboot")
         self.assertEqual(payload["initial_delay_seconds"], 0)
         self.assertIsInstance(payload["timestamp"], float)
 
-    @patch.object(LOG, "info")
-    def test_log_result_json_format(self, mock_log):
+    def test_log_result_json_format(self):
         res = CycleResult(
             status=Status.HEALTHY,
             reason="All good",
@@ -79,14 +76,14 @@ class LoggingAndCollectionTests(unittest.TestCase):
             upload_port=5201,
             download_port=5202,
         )
-        log_result(res, failures=0, fail_limit=3, action=ActionType.NONE, log_format="json")
-        mock_log.assert_called_once()
-        log_str = mock_log.call_args.args[0]
+        with self.assertLogs(LOG.name, level="INFO") as captured:
+            log_result(res, failures=0, fail_limit=3, action=ActionType.NONE, log_format="json")
+
+        log_str = captured.records[0].getMessage()
         self.assertIn('"status": "healthy"', log_str)
         self.assertIn('"upload_mbps": 150.0', log_str)
 
-    @patch.object(LOG, "info")
-    def test_log_result_text_omits_unknown_ports(self, mock_log):
+    def test_log_result_text_omits_unknown_ports(self):
         result = CycleResult(
             status=Status.HEALTHY,
             reason="All good",
@@ -94,10 +91,10 @@ class LoggingAndCollectionTests(unittest.TestCase):
             download_mbps=120.0,
         )
 
-        log_result(result, failures=0, fail_limit=3, action=ActionType.NONE)
+        with self.assertLogs(LOG.name, level="INFO") as captured:
+            log_result(result, failures=0, fail_limit=3, action=ActionType.NONE)
 
-        log_template, *log_args = mock_log.call_args.args
-        rendered_log = log_template % tuple(log_args)
+        rendered_log = captured.records[0].getMessage()
         self.assertIn("upload=150.0Mbps", rendered_log)
         self.assertIn("download=120.0Mbps", rendered_log)
         self.assertNotIn("@None", rendered_log)

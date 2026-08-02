@@ -6,11 +6,13 @@ import os
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from devolo_watchdog.__main__ import (
-    _load_env_file_if_present,
     build_parser,
+    find_executable,
+    load_env_file_if_present,
     main,
     run_calibrate,
     run_discover,
@@ -36,6 +38,26 @@ def make_settings(**kwargs) -> Settings:
 
 
 class CliParserTests(unittest.TestCase):
+    def test_find_executable_uses_linux_path(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executable = Path(tmpdir) / "test-command"
+            executable.write_text("#!/bin/sh\n", encoding="utf-8")
+            executable.chmod(0o755)
+
+            with patch.dict(os.environ, {"PATH": tmpdir}):
+                self.assertEqual(find_executable("test-command"), str(executable))
+                self.assertIsNone(find_executable("missing-command"))
+
+    def test_subcommand_is_required(self):
+        parser = build_parser()
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args([])
+
+    def test_run_flags_are_rejected_at_top_level(self):
+        parser = build_parser()
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parser.parse_args(["--once", "run"])
+
     def test_once_and_allow_action_flag_parsing(self):
         parser = build_parser()
         args = parser.parse_args(["run", "--once", "--allow-action"])
@@ -87,7 +109,7 @@ class CliParserTests(unittest.TestCase):
             "DW_MIN_DOWNLOAD_MBPS": "100",
         }
         with patch.dict(os.environ, env, clear=True):
-            with patch("sys.argv", ["devolo-watchdog", "--check-config"]):
+            with patch("sys.argv", ["devolo-watchdog", "run", "--check-config"]):
                 self.assertEqual(main(), 0)
 
     @patch("devolo_watchdog.__main__.probe_gateway")
@@ -103,7 +125,7 @@ class CliParserTests(unittest.TestCase):
             "DW_MIN_DOWNLOAD_MBPS": "100",
         }
         with patch.dict(os.environ, env, clear=True):
-            with patch("sys.argv", ["devolo-watchdog", "--check-config"]):
+            with patch("sys.argv", ["devolo-watchdog", "run", "--check-config"]):
                 self.assertEqual(main(), 2)
 
     @patch("devolo_watchdog.__main__.run_doctor")
@@ -122,8 +144,11 @@ class CliParserTests(unittest.TestCase):
         mock_plc.return_value = PlcPhyResult(reachable=True, rx_rate_mbps=200.0, tx_rate_mbps=200.0)
         with tempfile.TemporaryDirectory() as tmpdir:
             st = make_settings(state_file=os.path.join(tmpdir, "state.json"))
-            with patch("shutil.which", side_effect=lambda command: f"/usr/bin/{command}"):
-                code = run_doctor(st, json_output=False)
+            code = run_doctor(
+                st,
+                json_output=False,
+                executable_finder=lambda command: f"/usr/bin/{command}",
+            )
             self.assertEqual(code, 0)
 
     @patch("devolo_watchdog.probes.probe_plc_phy")
@@ -134,8 +159,11 @@ class CliParserTests(unittest.TestCase):
         mock_ping.return_value = GatewayProbeResult(reachable=True)
         mock_plc.return_value = PlcPhyResult(reachable=True, rx_rate_mbps=200.0, tx_rate_mbps=200.0)
         st = make_settings()
-        with patch("shutil.which", side_effect=lambda command: f"/usr/bin/{command}"):
-            code = run_doctor(st, json_output=True)
+        code = run_doctor(
+            st,
+            json_output=True,
+            executable_finder=lambda command: f"/usr/bin/{command}",
+        )
         self.assertEqual(code, 0)
 
     @patch("devolo_watchdog.probes.probe_plc_phy")
@@ -150,8 +178,12 @@ class CliParserTests(unittest.TestCase):
         def binary_path(command):
             return None if command == "iperf3" else f"/usr/bin/{command}"
 
-        with patch("shutil.which", side_effect=binary_path), redirect_stdout(stdout):
-            code = run_doctor(make_settings(), json_output=True)
+        with redirect_stdout(stdout):
+            code = run_doctor(
+                make_settings(),
+                json_output=True,
+                executable_finder=binary_path,
+            )
 
         self.assertEqual(code, 1)
         payload = json.loads(stdout.getvalue())
@@ -402,7 +434,7 @@ class CliParserTests(unittest.TestCase):
             with patch("pathlib.Path.is_file") as mock_is_file:
                 mock_is_file.return_value = True
                 with patch("pathlib.Path.read_text", return_value="DW_CUSTOM_ENV_VAR=loaded_ok\n"):
-                    _load_env_file_if_present()
+                    load_env_file_if_present()
                     self.assertEqual(os.environ.get("DW_CUSTOM_ENV_VAR"), "loaded_ok")
         finally:
             if os.path.exists(temp_name):

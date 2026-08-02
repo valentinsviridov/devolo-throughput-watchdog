@@ -33,3 +33,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD ["python", "-m", "devolo_watchdog", "healthcheck"]
 
 ENTRYPOINT ["python", "-m", "devolo_watchdog"]
+CMD ["run"]
