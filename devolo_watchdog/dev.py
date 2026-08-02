@@ -16,7 +16,7 @@ def test() -> None:
 
 
 def lint() -> None:
-    """Run ruff linter and formatting checks."""
+    """Run ruff linter, formatting checks, and mypy type check."""
     print("=== Running Ruff Linter ===")
     if lint_code := _run(["ruff", "check", "."]):
         sys.exit(lint_code)
@@ -25,10 +25,15 @@ def lint() -> None:
     if fmt_code := _run(["ruff", "format", "--check", "."]):
         sys.exit(fmt_code)
 
+    print("\n=== Running Mypy Type Check ===")
+    if type_code := _run(["mypy", "devolo_watchdog"]):
+        sys.exit(type_code)
+
 
 def check() -> None:
-    """Run linting, formatting check, and unit tests."""
+    """Run linting, formatting check, type check, and unit tests."""
     lint()
+
     print("\n=== Running Unit Tests ===")
     sys.exit(_run(["unittest", "discover", "-s", "tests"]))
 

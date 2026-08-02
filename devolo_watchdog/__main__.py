@@ -23,7 +23,7 @@ LOG = logging.getLogger("devolo-throughput-watchdog")
 class WatchdogArgumentParser(argparse.ArgumentParser):
     """Custom ArgumentParser ensuring top-level flags like --json persist across subparsers."""
 
-    def parse_args(
+    def parse_args(  # type: ignore[override]
         self,
         args: Sequence[str] | None = None,
         namespace: argparse.Namespace | None = None,
@@ -36,7 +36,7 @@ class WatchdogArgumentParser(argparse.ArgumentParser):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    common_parser = argparse.ArgumentParser(add_help=False)
+    common_parser = WatchdogArgumentParser(add_help=False)
     common_parser.add_argument("--json", action="store_true", help="output results in JSON format")
 
     parser = WatchdogArgumentParser(

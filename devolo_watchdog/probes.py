@@ -236,7 +236,7 @@ def patch_devolo_device_interfaces() -> None:
                 return fallback
             return interfaces
 
-        Device._get_relevant_interfaces = _patched_get_relevant_interfaces
+        Device._get_relevant_interfaces = _patched_get_relevant_interfaces  # type: ignore[method-assign]
         _DEVICE_INTERFACES_PATCHED = True
     except Exception:
         pass
