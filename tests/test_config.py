@@ -61,6 +61,9 @@ class PortTests(unittest.TestCase):
 
 
 class SettingsValidationTests(unittest.TestCase):
+    def test_json_is_the_default_log_format(self):
+        self.assertEqual(make_settings().log_format, "json")
+
     def test_direct_construction_runs_post_init_validation(self):
         with self.assertRaises(ValueError):
             Settings(
@@ -117,6 +120,22 @@ class SettingsValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             make_settings(initial_delay_seconds=-1)
 
+    def test_notification_url_must_be_absolute_http_url(self):
+        with self.assertRaisesRegex(ValueError, "DW_NTFY_URL"):
+            make_settings(ntfy_url="ntfy.sh/watchdog")
+        with self.assertRaisesRegex(ValueError, "DW_NTFY_URL"):
+            make_settings(ntfy_url="file:///tmp/watchdog")
+
+    def test_notification_token_requires_url(self):
+        with self.assertRaisesRegex(ValueError, "DW_NTFY_TOKEN_FILE requires"):
+            make_settings(ntfy_token_file="/run/secrets/ntfy-token")
+
+    def test_notification_timeout_must_be_finite_and_positive(self):
+        with self.assertRaisesRegex(ValueError, "DW_NTFY_TIMEOUT_SECONDS"):
+            make_settings(ntfy_timeout_seconds=0.0)
+        with self.assertRaisesRegex(ValueError, "DW_NTFY_TIMEOUT_SECONDS"):
+            make_settings(ntfy_timeout_seconds=float("nan"))
+
     def test_missing_required_env_var_raises(self):
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(ValueError):
@@ -130,6 +149,9 @@ class SettingsValidationTests(unittest.TestCase):
             "DW_MIN_DOWNLOAD_MBPS": "100",
             "DW_POST_REBOOT_DELAY_SECONDS": "60",
             "DW_LOG_FORMAT": "json",
+            "DW_NTFY_URL": "https://ntfy.example.com/watchdog-alerts",
+            "DW_NTFY_TOKEN_FILE": "/run/secrets/ntfy-token",
+            "DW_NTFY_TIMEOUT_SECONDS": "2.5",
         }
         with patch.dict(os.environ, env, clear=True):
             cfg = Settings.from_env()
@@ -138,6 +160,9 @@ class SettingsValidationTests(unittest.TestCase):
             self.assertEqual(cfg.max_reboots_in_window, 3)
             self.assertEqual(cfg.post_reboot_delay_seconds, 60)
             self.assertEqual(cfg.log_format, "json")
+            self.assertEqual(cfg.ntfy_url, "https://ntfy.example.com/watchdog-alerts")
+            self.assertEqual(cfg.ntfy_token_file, "/run/secrets/ntfy-token")
+            self.assertEqual(cfg.ntfy_timeout_seconds, 2.5)
 
     def test_invalid_action_value_raises(self):
         env = {

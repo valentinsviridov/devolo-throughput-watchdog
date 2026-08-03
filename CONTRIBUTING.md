@@ -23,6 +23,7 @@ project's mandatory dependencies and will produce false unresolved-import report
 - `policy.py`: pure classification and state-transition rules.
 - `runner.py`: scheduling, persistence, action orchestration, and signals.
 - `actions.py`: hardware-changing operations.
+- `notifications.py`: best-effort outbound notification adapters and message content.
 - `state.py`: atomic state and heartbeat storage.
 - `__main__.py`: CLI parsing and diagnostic commands.
 
@@ -37,6 +38,7 @@ Changes must preserve these rules:
 3. A reboot attempt is recorded before the management API is called. If a configured state file cannot be written, the action is skipped.
 4. Every automated or on-demand management API call—accepted, rejected, or failed—counts toward the moving-window limit.
 5. Invalid configuration must fail closed with exit code 3.
+6. Notification failures must be observable in logs but must never block a hardware recovery action.
 
 The `restart` command and automated recovery must both use `runner.request_restart`; new orchestration must not call the
 lower-level `actions.restart_devolo` adapter directly. The manual command intentionally bypasses policy decisions, but

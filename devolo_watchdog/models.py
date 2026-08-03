@@ -107,6 +107,7 @@ class RebootAttempt:
 @dataclass
 class WatchdogState:
     consecutive_failures: int = 0
+    degradation_notification_sent: bool = False
     reboot_history: list[RebootAttempt] = field(default_factory=list)
     last_reboot_timestamp: float | None = None
     breaker_tripped: bool = False
@@ -129,6 +130,7 @@ class WatchdogState:
     def to_dict(self) -> dict[str, Any]:
         return {
             "consecutive_failures": self.consecutive_failures,
+            "degradation_notification_sent": self.degradation_notification_sent,
             "reboot_history": [a.to_dict() for a in self.reboot_history],
             "last_reboot_timestamp": self.last_reboot_timestamp,
             "breaker_tripped": self.breaker_tripped,
@@ -145,6 +147,7 @@ class WatchdogState:
         history = [RebootAttempt.from_dict(h) for h in history_raw]
         return cls(
             consecutive_failures=int(data.get("consecutive_failures", 0)),
+            degradation_notification_sent=bool(data.get("degradation_notification_sent", False)),
             reboot_history=history,
             last_reboot_timestamp=data.get("last_reboot_timestamp"),
             breaker_tripped=bool(data.get("breaker_tripped", False)),

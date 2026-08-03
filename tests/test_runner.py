@@ -53,7 +53,10 @@ class LoggingAndCollectionTests(unittest.TestCase):
 
     def test_log_startup_text_format(self):
         with self.assertLogs(LOG.name, level="INFO") as captured:
-            log_startup(make_settings(initial_delay_seconds=30), once=False)
+            log_startup(
+                make_settings(initial_delay_seconds=30, log_format="text"),
+                once=False,
+            )
 
         self.assertEqual(
             captured.records[0].getMessage(),
@@ -212,6 +215,52 @@ class RestartRequestTests(unittest.TestCase):
         store.save.assert_called_once_with(state)
         self.assertFalse(state.reboot_history[0].accepted)
 
+    @patch("devolo_watchdog.runner.restart_devolo")
+    @patch("devolo_watchdog.runner.send_ntfy_notification")
+    def test_pre_reboot_notification_is_sent_after_persistence_and_before_api_call(
+        self, mock_notify, mock_restart
+    ):
+        events: list[str] = []
+        store = MagicMock(spec=StateStore)
+        store.save.side_effect = lambda _state: events.append("save") or True
+        mock_notify.side_effect = lambda *_args: events.append("notify")
+        mock_restart.side_effect = lambda _settings: events.append("restart") or True
+
+        request_restart(
+            make_settings(ntfy_url="https://ntfy.example.com/watchdog-alerts"),
+            store,
+            WatchdogState(),
+            now=123.0,
+            reason="automatic recovery",
+        )
+
+        self.assertEqual(events, ["save", "notify", "restart", "save"])
+        notification = mock_notify.call_args.args[1]
+        self.assertEqual(notification.event, "pre_reboot")
+
+    @patch("devolo_watchdog.runner.restart_devolo", return_value=True)
+    @patch(
+        "devolo_watchdog.runner.send_ntfy_notification",
+        side_effect=TimeoutError("notification timed out"),
+    )
+    def test_notification_failure_does_not_block_restart(self, mock_notify, mock_restart):
+        store = MagicMock(spec=StateStore)
+        store.save.return_value = True
+
+        with self.assertLogs(LOG.name, level="WARNING") as captured:
+            accepted = request_restart(
+                make_settings(ntfy_url="https://ntfy.example.com/watchdog-alerts"),
+                store,
+                WatchdogState(),
+                now=123.0,
+                reason="automatic recovery",
+            )
+
+        self.assertTrue(accepted)
+        mock_notify.assert_called_once()
+        mock_restart.assert_called_once()
+        self.assertIn("notification event=pre_reboot result=error", captured.output[0])
+
 
 class DaemonExecutionTests(unittest.TestCase):
     @patch("devolo_watchdog.runner.log_startup")
@@ -257,6 +306,74 @@ class DaemonExecutionTests(unittest.TestCase):
         exit_code = run_daemon(cfg, once=True, allow_action=False)
         self.assertEqual(exit_code, 1)
         mock_reboot.assert_not_called()
+
+    @patch("devolo_watchdog.runner.send_ntfy_notification")
+    @patch("devolo_watchdog.runner.StateStore.load")
+    @patch("devolo_watchdog.runner.collect_measurement_report")
+    def test_new_degradation_episode_sends_one_notification(
+        self, mock_collect, mock_load, mock_notify
+    ):
+        mock_load.return_value = WatchdogState(last_status=Status.HEALTHY)
+        mock_collect.return_value = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            wan_iperf=WanIperfResult(upload_mbps=10.0, download_mbps=10.0),
+        )
+
+        run_daemon(
+            make_settings(ntfy_url="https://ntfy.example.com/watchdog-alerts"),
+            once=True,
+        )
+
+        mock_notify.assert_called_once()
+        notification = mock_notify.call_args.args[1]
+        self.assertEqual(notification.event, "degradation_detected")
+        self.assertTrue(mock_load.return_value.degradation_notification_sent)
+
+    @patch("devolo_watchdog.runner.send_ntfy_notification")
+    @patch("devolo_watchdog.runner.StateStore.load")
+    @patch("devolo_watchdog.runner.collect_measurement_report")
+    def test_continuing_degradation_does_not_repeat_notification(
+        self, mock_collect, mock_load, mock_notify
+    ):
+        mock_load.return_value = WatchdogState(
+            consecutive_failures=1,
+            degradation_notification_sent=True,
+            last_status=Status.DEGRADED,
+        )
+        mock_collect.return_value = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            wan_iperf=WanIperfResult(upload_mbps=10.0, download_mbps=10.0),
+        )
+
+        run_daemon(
+            make_settings(ntfy_url="https://ntfy.example.com/watchdog-alerts"),
+            once=True,
+        )
+
+        mock_notify.assert_not_called()
+
+    @patch(
+        "devolo_watchdog.runner.send_ntfy_notification",
+        side_effect=TimeoutError("notification timed out"),
+    )
+    @patch("devolo_watchdog.runner.StateStore.load")
+    @patch("devolo_watchdog.runner.collect_measurement_report")
+    def test_failed_degradation_notification_remains_eligible_for_retry(
+        self, mock_collect, mock_load, mock_notify
+    ):
+        mock_load.return_value = WatchdogState(last_status=Status.DEGRADED)
+        mock_collect.return_value = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            wan_iperf=WanIperfResult(upload_mbps=10.0, download_mbps=10.0),
+        )
+
+        run_daemon(
+            make_settings(ntfy_url="https://ntfy.example.com/watchdog-alerts"),
+            once=True,
+        )
+
+        mock_notify.assert_called_once()
+        self.assertFalse(mock_load.return_value.degradation_notification_sent)
 
     @patch("devolo_watchdog.runner.restart_devolo")
     @patch("devolo_watchdog.runner.collect_measurement_report")

@@ -7,6 +7,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on", "y"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off", "n"})
@@ -111,7 +112,10 @@ class Settings:
     max_reboots_in_window: int = 3
     require_plc_evidence_for_reboot: bool = True
     min_plc_phy_rate_mbps: float = 50.0
-    log_format: str = "text"
+    log_format: str = "json"
+    ntfy_url: str | None = None
+    ntfy_token_file: str | None = None
+    ntfy_timeout_seconds: float = 5.0
 
     def __post_init__(self) -> None:
         self.validate()
@@ -196,7 +200,13 @@ class Settings:
                 os.getenv("DW_MIN_PLC_PHY_RATE_MBPS", "50.0"),
                 "DW_MIN_PLC_PHY_RATE_MBPS",
             ),
-            log_format=os.getenv("DW_LOG_FORMAT", "text").strip().lower(),
+            log_format=os.getenv("DW_LOG_FORMAT", "json").strip().lower(),
+            ntfy_url=(os.getenv("DW_NTFY_URL") or "").strip() or None,
+            ntfy_token_file=(os.getenv("DW_NTFY_TOKEN_FILE") or "").strip() or None,
+            ntfy_timeout_seconds=_parse_float(
+                os.getenv("DW_NTFY_TIMEOUT_SECONDS", "5.0"),
+                "DW_NTFY_TIMEOUT_SECONDS",
+            ),
         )
 
     def validate(self) -> None:
@@ -208,6 +218,12 @@ class Settings:
             raise ValueError("DW_ACTION must be 'log' or 'reboot'")
         if self.log_format not in {"text", "json"}:
             raise ValueError("DW_LOG_FORMAT must be 'text' or 'json'")
+        if self.ntfy_url:
+            parsed_ntfy_url = urlsplit(self.ntfy_url)
+            if parsed_ntfy_url.scheme not in {"http", "https"} or not parsed_ntfy_url.netloc:
+                raise ValueError("DW_NTFY_URL must be an absolute HTTP or HTTPS URL")
+        elif self.ntfy_token_file:
+            raise ValueError("DW_NTFY_TOKEN_FILE requires DW_NTFY_URL")
         if not re.fullmatch(r"[1-9][0-9]*[KMGT]?", self.test_bytes):
             raise ValueError("DW_TEST_BYTES must look like 64M, 512K or 1G")
         _validate_finite_positive_values(
@@ -216,6 +232,7 @@ class Settings:
                 "DW_MIN_DOWNLOAD_MBPS": self.min_download_mbps,
                 "DW_REBOOT_WINDOW_HOURS": self.reboot_window_hours,
                 "DW_MIN_PLC_PHY_RATE_MBPS": self.min_plc_phy_rate_mbps,
+                "DW_NTFY_TIMEOUT_SECONDS": self.ntfy_timeout_seconds,
             }
         )
         _validate_integer_values(

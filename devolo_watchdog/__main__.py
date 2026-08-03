@@ -19,6 +19,7 @@ from devolo_plc_api import Device
 
 from devolo_watchdog.actions import read_password
 from devolo_watchdog.config import Settings, heartbeat_max_age_seconds_from_env
+from devolo_watchdog.logging_config import configure_json_logging
 from devolo_watchdog.probes import probe_gateway
 from devolo_watchdog.runner import RestartPersistenceError, request_restart, run_daemon
 from devolo_watchdog.state import StateStore, check_heartbeat
@@ -626,10 +627,7 @@ def main() -> int:
     args = build_parser().parse_args()
     sub = args.subcommand
     json_output = getattr(args, "json", False)
-    log_format = (
-        "%(message)s" if json_output and sub == "run" else "%(asctime)s %(levelname)s %(message)s"
-    )
-    logging.basicConfig(level=logging.INFO, format=log_format)
+    configure_json_logging()
     load_env_file_if_present()
 
     if sub == "healthcheck":

@@ -46,6 +46,7 @@ class StateStoreTests(unittest.TestCase):
             store = StateStore(path)
             state = WatchdogState(
                 consecutive_failures=3,
+                degradation_notification_sent=True,
                 breaker_tripped=True,
                 last_status=Status.DEGRADED,
                 last_reason="Local link slow",
@@ -54,6 +55,7 @@ class StateStoreTests(unittest.TestCase):
 
             loaded = store.load()
             self.assertEqual(loaded.consecutive_failures, 3)
+            self.assertTrue(loaded.degradation_notification_sent)
             self.assertTrue(loaded.breaker_tripped)
             self.assertEqual(loaded.last_status, Status.DEGRADED)
             self.assertEqual(loaded.last_reason, "Local link slow")

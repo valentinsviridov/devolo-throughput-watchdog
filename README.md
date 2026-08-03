@@ -28,6 +28,7 @@ graph TD
             Policy["policy.py (Pure Evaluation & Rules)"]
             Probes["probes.py (ICMP, iperf3, PHY Adapters)"]
             Actions["actions.py (Devolo Device API)"]
+            Notifications["notifications.py (ntfy HTTP Adapter)"]
         end
     end
 
@@ -49,6 +50,7 @@ graph TD
     Runner --> Policy
     Runner --> Probes
     Runner --> Actions
+    Runner --> Notifications
 
     State --> StateFile
     State --> HeartbeatFile
@@ -57,6 +59,7 @@ graph TD
     Probes -- "2. PLC PHY Link Query" --> Devolo
     Probes -- "3. iperf3 Throughput" --> PublicIperf
     Actions -- "4. devolo async_restart()" --> Devolo
+    Notifications -- "Mobile / desktop push" --> Ntfy["ntfy Server"]
 ```
 
 ---
@@ -73,7 +76,7 @@ graph TD
 
     CheckStatus -- "HEALTHY" --> ResetCounter["Reset consecutive failures"]
     CheckStatus -- "UNAVAILABLE / MISCONFIGURED" --> ResetCounter
-    CheckStatus -- "DEGRADED" --> IncCounter["Increment Failures<br/>(failures += 1)"]
+    CheckStatus -- "DEGRADED" --> IncCounter["Increment Failures<br/>(failures += 1)<br/>Notify once per degradation episode"]
 
     IncCounter --> CheckFailLimit{"failures >= DW_FAIL_LIMIT?"}
     CheckFailLimit -- "No" --> WaitInterval["Wait interval_seconds"]
@@ -81,7 +84,7 @@ graph TD
     CheckFailLimit -- "Yes" --> CheckBreaker{"attempts in moving window<br/>< DW_MAX_REBOOTS_IN_WINDOW?"}
     CheckBreaker -- "No (Breaker Tripped)" --> LogBreaker["Log Circuit Breaker Active<br/>(Pause Reboots)"] --> WaitCooldown["Wait cooldown_seconds"]
 
-    CheckBreaker -- "Yes" --> RebootStep["4. Trigger Device Action<br/>(actions.py async_restart)<br/>• Call devolo async_restart()<br/>• Wait DW_POST_REBOOT_DELAY_SECONDS<br/>• Execute Post-Reboot Verification"]
+    CheckBreaker -- "Yes" --> RebootStep["4. Trigger Device Action<br/>(actions.py async_restart)<br/>• Persist attempt<br/>• Send pre-reboot notification<br/>• Call devolo async_restart()<br/>• Wait DW_POST_REBOOT_DELAY_SECONDS<br/>• Execute Post-Reboot Verification"]
 
     RebootStep --> CheckVerify{"Verification Passed?"}
     CheckVerify -- "Yes (HEALTHY)" --> ResetCounter
@@ -131,7 +134,8 @@ stateDiagram-v2
         CircuitBreakerActive --> IdleWait: Log Circuit Breaker Active (Skip Reboot)
         CircuitBreakerActive --> CheckWindowRateLimit: Old attempts age out of window
         ExecuteReboot --> RecordAttempt: Record attempt timestamp in state file BEFORE API call
-        RecordAttempt --> CallDevoloAPI: async_restart()
+        RecordAttempt --> PreRebootNotify: Best-effort ntfy publish
+        PreRebootNotify --> CallDevoloAPI: async_restart()
         CallDevoloAPI --> PostRebootVerify: API Success
         PostRebootVerify --> ResetStreak: Verification HEALTHY
         PostRebootVerify --> IdleWait: Verification Failed
@@ -152,6 +156,8 @@ stateDiagram-v2
   hours) and automatically re-arms when old attempts leave the window.
 - **Pre-Attempt Action Accounting**: Records reboot attempt timestamps in state *before* issuing management API calls.
   If a configured state file cannot be written, the reboot is skipped rather than bypassing the rate limit.
+- **Optional Push Notifications**: Sends one ntfy alert when a degradation episode begins and an urgent alert after
+  persisting a restart attempt but before calling the device API. Delivery failures never block recovery.
 - **Safe `--once` Execution**: One-shot CLI execution defaults to dry-run mode. Hardware reboot actions require explicit
   `--allow-action`.
 - **On-Demand Restart Test**: The `restart` command exercises the same persisted management-API action path used by
@@ -282,6 +288,48 @@ The daemon writes a startup event immediately, before its configured initial del
 
 ---
 
+## Mobile Notifications with ntfy (Recommended)
+
+[ntfy](https://docs.ntfy.sh/) is the simplest supported path to Android, iOS, or desktop notifications: the watchdog
+publishes directly to a topic with one HTTPS request, and no bot process or extra Python package is required.
+
+1. Install the ntfy app and subscribe to a long, random topic such as
+   `devolo-watchdog-<random-secret>`.
+2. Test the topic before configuring the watchdog:
+
+   ```bash
+   curl -H 'Title: Watchdog test' -d 'Notifications work' \
+     https://ntfy.sh/devolo-watchdog-replace-with-a-long-random-secret
+   ```
+
+3. Add the full topic URL to `devolo-throughput-watchdog.env`:
+
+   ```ini
+   DW_NTFY_URL=https://ntfy.sh/devolo-watchdog-replace-with-a-long-random-secret
+   DW_NTFY_TIMEOUT_SECONDS=5.0
+   ```
+
+4. Restart the service with `docker compose up -d`.
+
+An unauthenticated `ntfy.sh` topic is public to anyone who knows its name, so treat the topic URL like a password and
+do not use it for sensitive details. For stronger access control, use an authenticated ntfy account/server, place the
+access token in a restricted file readable by the container user, set `DW_NTFY_TOKEN_FILE`, and enable the read-only
+token mount shown in `compose.yml`. The token is sent as a Bearer credential and is never placed in logs.
+
+The watchdog sends:
+
+- one successfully delivered high-priority `degradation_detected` notification per degraded episode; failed delivery
+  is retried on the next degraded cycle without producing repeated alerts after success;
+- a maximum-priority `pre_reboot` notification for every automated or on-demand restart, after the attempt is safely
+  persisted and immediately before the management API call.
+
+Notification delivery is best-effort because the monitored path is already unhealthy. A failed send is logged and the
+reboot continues; the timeout bounds the delay before recovery. If the PLC link has no Internet connectivity at all,
+an Internet notification service cannot deliver before recovery—true out-of-band alerting requires another network
+path, such as a cellular modem or a monitoring host outside the affected link.
+
+---
+
 ## CLI Command Reference
 
 ### Diagnostics (`doctor`)
@@ -355,10 +403,10 @@ uv run devolo-watchdog run --once --allow-action
 
 # Daemon mode
 uv run devolo-watchdog run
-
-# Structured one-line JSON cycle records
-uv run devolo-watchdog --json run
 ```
+
+Daemon and single-check logs are emitted as one JSON object per line by default. This includes startup, cycle,
+warning, error, and exception records.
 
 ---
 
@@ -463,7 +511,10 @@ built in a temporary directory and removed afterward.
 | `DW_STATE_FILE`                      | unset                   | Persistent state JSON path; Compose sets `/var/lib/devolo-watchdog/state.json` |
 | `DW_HEARTBEAT_FILE`                  | unset                   | Heartbeat JSON path; Compose sets `/tmp/watchdog_heartbeat`                    |
 | `DW_HEARTBEAT_MAX_AGE_SECONDS`       | `max(90, 2 × interval)` | Optional healthcheck freshness override                                        |
-| `DW_LOG_FORMAT`                      | `text`                  | Structured log output format: `text` or `json`                                 |
+| `DW_LOG_FORMAT`                      | `json`                  | Cycle payload style; logs are always wrapped in a JSON envelope                 |
+| `DW_NTFY_URL`                        | unset                   | Full ntfy topic URL; enables degradation and pre-reboot push alerts             |
+| `DW_NTFY_TOKEN_FILE`                 | unset                   | Optional file containing an ntfy access token                                  |
+| `DW_NTFY_TIMEOUT_SECONDS`            | `5.0`                   | Max notification delivery delay before recovery continues                      |
 
 ## License
 

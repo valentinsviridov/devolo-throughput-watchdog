@@ -7,16 +7,22 @@ import logging
 import signal
 import threading
 import time
-from datetime import UTC, datetime
 
 from devolo_watchdog.actions import read_password, restart_devolo
 from devolo_watchdog.config import Settings, candidate_ports
+from devolo_watchdog.logging_config import format_log_timestamp
 from devolo_watchdog.models import (
     ActionType,
     CycleResult,
     MeasurementReport,
     Status,
     WatchdogState,
+)
+from devolo_watchdog.notifications import (
+    Notification,
+    degradation_notification,
+    pre_reboot_notification,
+    send_ntfy_notification,
 )
 from devolo_watchdog.policy import evaluate_report, transition
 from devolo_watchdog.probes import (
@@ -33,14 +39,21 @@ class RestartPersistenceError(RuntimeError):
     """A restart was skipped because its attempt could not be persisted safely."""
 
 
-def format_log_timestamp(epoch_seconds: float | None = None) -> str:
-    """Return an ISO 8601 UTC timestamp suitable for structured logs."""
-    timestamp = time.time() if epoch_seconds is None else epoch_seconds
-    return (
-        datetime.fromtimestamp(timestamp, tz=UTC)
-        .isoformat(timespec="milliseconds")
-        .replace("+00:00", "Z")
-    )
+def _send_notification_best_effort(settings: Settings, notification: Notification) -> bool:
+    """Attempt delivery without allowing a notification outage to block recovery."""
+    if settings.ntfy_url is None:
+        return False
+    try:
+        send_ntfy_notification(settings, notification)
+    except Exception as exc:  # Notification failures must not block a hardware recovery action.
+        LOG.warning(
+            "notification event=%s result=error error=%s",
+            notification.event,
+            exc,
+        )
+        return False
+    LOG.info("notification event=%s result=sent", notification.event)
+    return True
 
 
 def request_restart(
@@ -56,6 +69,10 @@ def request_restart(
     if not store.save(state):
         raise RestartPersistenceError("restart attempt could not be persisted")
 
+    _send_notification_best_effort(
+        settings,
+        pre_reboot_notification(settings.devolo_ip, reason),
+    )
     accepted = restart_devolo(settings)
     if accepted:
         state.reboot_history[-1].accepted = True
@@ -325,6 +342,18 @@ def run_daemon(
             action,
             settings.log_format,
         )
+
+        if result.status == Status.DEGRADED and not state.degradation_notification_sent:
+            state.degradation_notification_sent = _send_notification_best_effort(
+                settings,
+                degradation_notification(
+                    result.reason,
+                    state.consecutive_failures,
+                    settings.fail_limit,
+                ),
+            )
+            if state.degradation_notification_sent:
+                store.save(state)
 
         reboot_triggered = _handle_action(
             action,

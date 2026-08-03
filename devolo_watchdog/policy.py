@@ -151,6 +151,7 @@ def transition(
     else:
         # Reset consecutive failure streak on HEALTHY, UNAVAILABLE, or MISCONFIGURED
         state.consecutive_failures = 0
+        state.degradation_notification_sent = False
 
     if result.status == Status.HEALTHY:
         state.breaker_tripped = False

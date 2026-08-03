@@ -25,10 +25,13 @@ services:
     environment:
       - DW_STATE_FILE=/var/lib/devolo-watchdog/state.json
       - DW_HEARTBEAT_FILE=/tmp/watchdog_heartbeat
+      - DW_LOG_FORMAT=json
     volumes:
       - devolo-state:/var/lib/devolo-watchdog
       # Uncomment if using password file authentication:
       # - /etc/devolo-throughput-watchdog.password:/etc/devolo-throughput-watchdog.password:ro
+      # Uncomment if using authenticated ntfy publishing:
+      # - /etc/devolo-watchdog-ntfy-token:/run/secrets/devolo-watchdog-ntfy-token:ro
 
 volumes:
   devolo-state:

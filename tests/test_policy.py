@@ -162,12 +162,16 @@ class PolicyEvaluationTests(unittest.TestCase):
 class TransitionTests(unittest.TestCase):
     def test_unavailable_resets_consecutive_failure_streak(self):
         st = make_settings(fail_limit=3)
-        state = WatchdogState(consecutive_failures=2)
+        state = WatchdogState(
+            consecutive_failures=2,
+            degradation_notification_sent=True,
+        )
         now = 1000.0
 
         result = CycleResult(status=Status.UNAVAILABLE, reason="busy")
         new_state, action, _ = transition(state, result, st, now)
         self.assertEqual(new_state.consecutive_failures, 0)
+        self.assertFalse(new_state.degradation_notification_sent)
         self.assertEqual(action, ActionType.NONE)
 
     def test_healthy_resets_breaker_tripped(self):
