@@ -72,6 +72,18 @@ def degradation_notification(
     )
 
 
+def recovery_notification(
+    result_reason: str,
+) -> Notification:
+    return Notification(
+        event="degradation_resolved",
+        title="Network degradation resolved",
+        message=result_reason,
+        priority="default",
+        tags="white_check_mark,signal_strength",
+    )
+
+
 def pre_reboot_notification(
     devolo_ip: str,
     reason: str,

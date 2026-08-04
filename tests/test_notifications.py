@@ -10,6 +10,7 @@ from devolo_watchdog.notifications import (
     Notification,
     degradation_notification,
     pre_reboot_notification,
+    recovery_notification,
     send_ntfy_notification,
 )
 
@@ -119,3 +120,11 @@ class NotificationContentTests(unittest.TestCase):
         self.assertIn("192.168.1.20", notification.message)
         self.assertIn("Fail limit reached", notification.message)
         self.assertEqual(notification.priority, "max")
+
+    def test_recovery_content(self):
+        notification = recovery_notification("Throughput is above configured thresholds")
+
+        self.assertEqual(notification.event, "degradation_resolved")
+        self.assertIn("Throughput is above configured thresholds", notification.message)
+        self.assertEqual(notification.priority, "default")
+        self.assertEqual(notification.tags, "white_check_mark,signal_strength")

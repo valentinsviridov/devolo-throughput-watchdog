@@ -22,6 +22,7 @@ from devolo_watchdog.notifications import (
     Notification,
     degradation_notification,
     pre_reboot_notification,
+    recovery_notification,
     send_ntfy_notification,
 )
 from devolo_watchdog.policy import evaluate_report, transition
@@ -332,6 +333,7 @@ def run_daemon(
             LOG.error("unexpected error during measurement cycle: %s", exc, exc_info=True)
             result = CycleResult(Status.UNAVAILABLE, f"unexpected measurement error: {exc}")
 
+        was_degraded_notified = state.degradation_notification_sent
         state, action, action_reason = transition(state, result, settings, now)
         store.save(state)
 
@@ -354,6 +356,12 @@ def run_daemon(
             )
             if state.degradation_notification_sent:
                 store.save(state)
+
+        if result.status != Status.DEGRADED and was_degraded_notified:
+            _send_notification_best_effort(
+                settings,
+                recovery_notification(result.reason),
+            )
 
         reboot_triggered = _handle_action(
             action,

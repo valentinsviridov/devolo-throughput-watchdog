@@ -375,6 +375,54 @@ class DaemonExecutionTests(unittest.TestCase):
         mock_notify.assert_called_once()
         self.assertFalse(mock_load.return_value.degradation_notification_sent)
 
+    @patch("devolo_watchdog.runner.send_ntfy_notification")
+    @patch("devolo_watchdog.runner.StateStore.load")
+    @patch("devolo_watchdog.runner.collect_measurement_report")
+    def test_recovery_after_degradation_sends_notification(
+        self, mock_collect, mock_load, mock_notify
+    ):
+        mock_load.return_value = WatchdogState(
+            consecutive_failures=1,
+            degradation_notification_sent=True,
+            last_status=Status.DEGRADED,
+        )
+        mock_collect.return_value = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            wan_iperf=WanIperfResult(upload_mbps=500.0, download_mbps=500.0),
+        )
+
+        run_daemon(
+            make_settings(ntfy_url="https://ntfy.example.com/watchdog-alerts"),
+            once=True,
+        )
+
+        mock_notify.assert_called_once()
+        notification = mock_notify.call_args.args[1]
+        self.assertEqual(notification.event, "degradation_resolved")
+
+    @patch("devolo_watchdog.runner.send_ntfy_notification")
+    @patch("devolo_watchdog.runner.StateStore.load")
+    @patch("devolo_watchdog.runner.collect_measurement_report")
+    def test_healthy_without_prior_degradation_does_not_send_recovery(
+        self, mock_collect, mock_load, mock_notify
+    ):
+        mock_load.return_value = WatchdogState(
+            consecutive_failures=0,
+            degradation_notification_sent=False,
+            last_status=Status.HEALTHY,
+        )
+        mock_collect.return_value = MeasurementReport(
+            gateway=GatewayProbeResult(reachable=True),
+            wan_iperf=WanIperfResult(upload_mbps=500.0, download_mbps=500.0),
+        )
+
+        run_daemon(
+            make_settings(ntfy_url="https://ntfy.example.com/watchdog-alerts"),
+            once=True,
+        )
+
+        mock_notify.assert_not_called()
+
     @patch("devolo_watchdog.runner.restart_devolo")
     @patch("devolo_watchdog.runner.collect_measurement_report")
     def test_once_triggers_reboot_when_allow_action_is_true(self, mock_collect, mock_reboot):
