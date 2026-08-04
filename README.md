@@ -68,9 +68,15 @@ graph TD
 
 ```mermaid
 graph TD
-    Start(["1. Start Measurement Cycle<br/>(runner.py)"]) --> ProbeStep["2. Execute Probes<br/>(probes.py)<br/>• ICMP Ping Gateway<br/>• PLC PHY Link Query<br/>• iperf3 Throughput Test"]
+    Start(["1. Start Measurement Cycle<br/>(runner.py)"]) --> GwProbe["2a. ICMP Ping Gateway<br/>(probes.py)"]
 
-    ProbeStep --> EvalStep["3. Evaluate Cycle Health<br/>(policy.py evaluate_report)<br/>• Validate finite rates<br/>• Compare speeds vs thresholds<br/>• Classify status"]
+    GwProbe -- "Unreachable" --> EvalStep
+    GwProbe -- "Reachable" --> PlcProbe["2b. PLC PHY Link Query<br/>(probes.py, optional)"]
+
+    PlcProbe -- "PHY rates below threshold" --> EvalStep
+    PlcProbe -- "PHY healthy / unavailable" --> IperfProbe["2c. iperf3 Throughput Test<br/>(probes.py)<br/>Skipped when PLC already degraded"]
+
+    IperfProbe --> EvalStep["3. Evaluate Cycle Health<br/>(policy.py evaluate_report)<br/>• Validate finite rates<br/>• Compare speeds vs thresholds<br/>• Classify status"]
 
     EvalStep --> CheckStatus{"Status Result?"}
 
@@ -156,8 +162,9 @@ stateDiagram-v2
   hours) and automatically re-arms when old attempts leave the window.
 - **Pre-Attempt Action Accounting**: Records reboot attempt timestamps in state *before* issuing management API calls.
   If a configured state file cannot be written, the reboot is skipped rather than bypassing the rate limit.
-- **Optional Push Notifications**: Sends one ntfy alert when a degradation episode begins and an urgent alert after
-  persisting a restart attempt but before calling the device API. Delivery failures never block recovery.
+- **Optional Push Notifications**: Sends one ntfy alert when a degradation episode begins, a recovery alert when the
+  episode resolves, and an urgent alert after persisting a restart attempt but before calling the device API. Delivery
+  failures never block recovery.
 - **Safe `--once` Execution**: One-shot CLI execution defaults to dry-run mode. Hardware reboot actions require explicit
   `--allow-action`.
 - **On-Demand Restart Test**: The `restart` command exercises the same persisted management-API action path used by
@@ -320,6 +327,8 @@ The watchdog sends:
 
 - one successfully delivered high-priority `degradation_detected` notification per degraded episode; failed delivery
   is retried on the next degraded cycle without producing repeated alerts after success;
+- one default-priority `degradation_resolved` notification when a notified degradation episode ends (status returns
+  to healthy, unavailable, or misconfigured);
 - a maximum-priority `pre_reboot` notification for every automated or on-demand restart, after the attempt is safely
   persisted and immediately before the management API call.
 
