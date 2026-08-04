@@ -25,7 +25,7 @@ from devolo_watchdog.notifications import (
     recovery_notification,
     send_ntfy_notification,
 )
-from devolo_watchdog.policy import evaluate_report, transition
+from devolo_watchdog.policy import evaluate_report, plc_phy_is_degraded, transition
 from devolo_watchdog.probes import (
     probe_gateway,
     probe_plc_phy,
@@ -176,6 +176,10 @@ def collect_measurement_report(settings: Settings, now: float) -> MeasurementRep
             plc_result = probe_plc_phy(settings.devolo_ip, password)
         except Exception as exc:
             LOG.debug("PLC PHY probe skipped/failed: %s", exc)
+
+    # Short-circuit: PLC PHY degradation is conclusive; skip the expensive iperf test.
+    if plc_phy_is_degraded(plc_result, settings.min_plc_phy_rate_mbps):
+        return MeasurementReport(gateway=gw_result, plc_phy=plc_result, timestamp=now)
 
     # 3. WAN iperf probe (rotated candidate ports)
     ports_up = candidate_ports(settings, reverse=False, now=now)

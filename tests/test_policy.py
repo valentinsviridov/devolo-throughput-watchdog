@@ -13,7 +13,7 @@ from devolo_watchdog.models import (
     WanIperfResult,
     WatchdogState,
 )
-from devolo_watchdog.policy import evaluate_report, transition
+from devolo_watchdog.policy import evaluate_report, plc_phy_is_degraded, transition
 
 
 def make_settings(**kwargs) -> Settings:
@@ -157,6 +157,27 @@ class PolicyEvaluationTests(unittest.TestCase):
         res = evaluate_report(report, st)
         self.assertEqual(res.status, Status.UNAVAILABLE)
         self.assertIn("No throughput tests were performed", res.reason)
+
+
+class PlcPhyIsDegradedTests(unittest.TestCase):
+    def test_degraded_when_rates_below_threshold(self):
+        plc = PlcPhyResult(rx_rate_mbps=30.0, tx_rate_mbps=50.0)
+        self.assertTrue(plc_phy_is_degraded(plc, 50.0))
+
+    def test_not_degraded_when_rates_meet_threshold(self):
+        plc = PlcPhyResult(rx_rate_mbps=100.0, tx_rate_mbps=80.0)
+        self.assertFalse(plc_phy_is_degraded(plc, 50.0))
+
+    def test_not_degraded_when_plc_is_none(self):
+        self.assertFalse(plc_phy_is_degraded(None, 50.0))
+
+    def test_not_degraded_when_rates_are_none(self):
+        plc = PlcPhyResult(rx_rate_mbps=None, tx_rate_mbps=None)
+        self.assertFalse(plc_phy_is_degraded(plc, 50.0))
+
+    def test_not_degraded_when_unreachable(self):
+        plc = PlcPhyResult(rx_rate_mbps=10.0, tx_rate_mbps=10.0, reachable=False)
+        self.assertFalse(plc_phy_is_degraded(plc, 50.0))
 
 
 class TransitionTests(unittest.TestCase):

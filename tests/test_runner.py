@@ -12,6 +12,7 @@ from devolo_watchdog.models import (
     CycleResult,
     GatewayProbeResult,
     MeasurementReport,
+    PlcPhyResult,
     Status,
     WanIperfResult,
     WatchdogState,
@@ -132,6 +133,19 @@ class LoggingAndCollectionTests(unittest.TestCase):
         self.assertFalse(report.gateway.reachable)
         self.assertIsNone(report.wan_iperf)
         mock_plc.assert_not_called()
+        mock_wan.assert_not_called()
+
+    @patch("devolo_watchdog.runner.probe_gateway")
+    @patch("devolo_watchdog.runner.probe_plc_phy")
+    @patch("devolo_watchdog.runner.probe_wan_iperf")
+    def test_degraded_plc_phy_short_circuits_iperf(self, mock_wan, mock_plc, mock_gw):
+        mock_gw.return_value = GatewayProbeResult(reachable=True)
+        mock_plc.return_value = PlcPhyResult(rx_rate_mbps=10.0, tx_rate_mbps=5.0)
+
+        report = collect_measurement_report(make_settings(min_plc_phy_rate_mbps=50.0), now=1000.0)
+
+        self.assertIsNotNone(report.plc_phy)
+        self.assertIsNone(report.wan_iperf)
         mock_wan.assert_not_called()
 
     @patch("devolo_watchdog.runner.read_password")

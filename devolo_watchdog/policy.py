@@ -10,6 +10,7 @@ from devolo_watchdog.models import (
     ActionType,
     CycleResult,
     MeasurementReport,
+    PlcPhyResult,
     Status,
     WanIperfResult,
     WatchdogState,
@@ -31,6 +32,17 @@ def _evaluate_gateway(report: MeasurementReport, settings: Settings) -> CycleRes
             reason=f"Local gateway ({settings.remote_probe}) is unreachable: {err}",
         )
     return None
+
+
+def plc_phy_is_degraded(plc: PlcPhyResult | None, min_rate: float) -> bool:
+    """Return True when PLC PHY rates are below the configured minimum."""
+    if plc is None or not plc.reachable:
+        return False
+    rx = plc.rx_rate_mbps
+    tx = plc.tx_rate_mbps
+    if rx is None or tx is None:
+        return False
+    return rx < min_rate or tx < min_rate
 
 
 def _evaluate_plc_phy(
