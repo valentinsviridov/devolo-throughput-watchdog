@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -89,16 +90,28 @@ class RebootAttempt:
     reason: str
 
     def to_dict(self) -> dict[str, Any]:
+        dt = datetime.fromtimestamp(self.timestamp, tz=UTC)
+        ts_str = dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
         return {
-            "timestamp": self.timestamp,
+            "timestamp": ts_str,
             "accepted": self.accepted,
             "reason": self.reason,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RebootAttempt:
+        ts_val = data["timestamp"]
+        if isinstance(ts_val, str):
+            try:
+                if ts_val.endswith("Z"):
+                    ts_val = ts_val[:-1] + "+00:00"
+                ts = datetime.fromisoformat(ts_val).timestamp()
+            except ValueError:
+                ts = float(ts_val)
+        else:
+            ts = float(ts_val)
         return cls(
-            timestamp=float(data["timestamp"]),
+            timestamp=ts,
             accepted=bool(data["accepted"]),
             reason=str(data.get("reason", "")),
         )
@@ -128,19 +141,43 @@ class WatchdogState:
         self.reboot_history = [a for a in self.reboot_history if a.timestamp >= cutoff]
 
     def to_dict(self) -> dict[str, Any]:
+        def format_ts(ts: float | None) -> str | None:
+            if ts is None:
+                return None
+            dt = datetime.fromtimestamp(ts, tz=UTC)
+            fmt = "%Y-%m-%dT%H:%M:%S.%f"
+            return dt.strftime(fmt)[:-3] + "Z"
+
         return {
             "consecutive_failures": self.consecutive_failures,
             "degradation_notification_sent": self.degradation_notification_sent,
             "reboot_history": [a.to_dict() for a in self.reboot_history],
-            "last_reboot_timestamp": self.last_reboot_timestamp,
+            "last_reboot_timestamp": format_ts(self.last_reboot_timestamp),
             "breaker_tripped": self.breaker_tripped,
             "last_status": self.last_status.value if self.last_status else None,
             "last_reason": self.last_reason,
-            "last_check_timestamp": self.last_check_timestamp,
+            "last_check_timestamp": format_ts(self.last_check_timestamp),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> WatchdogState:
+        def parse_ts(val: Any) -> float | None:
+            if val is None:
+                return None
+            if isinstance(val, (int, float)):
+                return float(val)
+            if isinstance(val, str):
+                try:
+                    if val.endswith("Z"):
+                        val = val[:-1] + "+00:00"
+                    return datetime.fromisoformat(val).timestamp()
+                except ValueError:
+                    pass
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return None
+
         last_status_raw = data.get("last_status")
         last_status = Status(last_status_raw) if last_status_raw else None
         history_raw = data.get("reboot_history", [])
@@ -149,9 +186,9 @@ class WatchdogState:
             consecutive_failures=int(data.get("consecutive_failures", 0)),
             degradation_notification_sent=bool(data.get("degradation_notification_sent", False)),
             reboot_history=history,
-            last_reboot_timestamp=data.get("last_reboot_timestamp"),
+            last_reboot_timestamp=parse_ts(data.get("last_reboot_timestamp")),
             breaker_tripped=bool(data.get("breaker_tripped", False)),
             last_status=last_status,
             last_reason=data.get("last_reason"),
-            last_check_timestamp=data.get("last_check_timestamp"),
+            last_check_timestamp=parse_ts(data.get("last_check_timestamp")),
         )

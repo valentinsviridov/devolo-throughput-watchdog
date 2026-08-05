@@ -10,6 +10,7 @@ import time
 
 from devolo_watchdog.actions import read_password, restart_devolo
 from devolo_watchdog.config import Settings, candidate_ports
+from devolo_watchdog.http_server import start_http_server
 from devolo_watchdog.logging_config import format_log_timestamp
 from devolo_watchdog.models import (
     ActionType,
@@ -303,6 +304,17 @@ def _once_exit_code(result: CycleResult) -> int:
     return 2
 
 
+def _handle_daemon_startup(
+    settings: Settings, store: StateStore, stop: threading.Event, once: bool
+) -> None:
+    if not once:
+        start_http_server(settings, store)
+        if settings.initial_delay_seconds:
+            if settings.heartbeat_file:
+                write_heartbeat(settings.heartbeat_file)
+            stop.wait(settings.initial_delay_seconds)
+
+
 def run_daemon(
     settings: Settings,
     once: bool = False,
@@ -316,10 +328,7 @@ def run_daemon(
     store = StateStore(settings.state_file)
     state = store.load()
 
-    if not once and settings.initial_delay_seconds:
-        if settings.heartbeat_file:
-            write_heartbeat(settings.heartbeat_file)
-        stop.wait(settings.initial_delay_seconds)
+    _handle_daemon_startup(settings, store, stop, once)
 
     exit_code = 0
 

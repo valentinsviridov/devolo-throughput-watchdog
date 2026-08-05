@@ -116,6 +116,7 @@ class Settings:
     ntfy_url: str | None = None
     ntfy_token_file: str | None = None
     ntfy_timeout_seconds: float = 5.0
+    http_port: int | None = None
 
     def __post_init__(self) -> None:
         self.validate()
@@ -136,6 +137,7 @@ class Settings:
             return value
 
         heartbeat_max_age_raw = os.getenv("DW_HEARTBEAT_MAX_AGE_SECONDS")
+        http_port_raw = os.getenv("DW_HTTP_PORT")
 
         return cls(
             iperf_server=os.getenv("DW_IPERF_SERVER", "iperf.example.com").strip(),
@@ -207,6 +209,7 @@ class Settings:
                 os.getenv("DW_NTFY_TIMEOUT_SECONDS", "5.0"),
                 "DW_NTFY_TIMEOUT_SECONDS",
             ),
+            http_port=_parse_int(http_port_raw, "DW_HTTP_PORT") if http_port_raw else None,
         )
 
     def validate(self) -> None:
@@ -260,6 +263,9 @@ class Settings:
             _validate_finite_positive_values(
                 {"DW_HEARTBEAT_MAX_AGE_SECONDS": self.heartbeat_max_age_seconds}
             )
+
+        if self.http_port is not None and not (1 <= self.http_port <= 65535):
+            raise ValueError("DW_HTTP_PORT must be between 1 and 65535")
 
         if self.iperf_tries > len(self.iperf_ports):
             raise ValueError("DW_IPERF_TRIES cannot exceed the number of configured ports")

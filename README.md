@@ -524,6 +524,7 @@ built in a temporary directory and removed afterward.
 | `DW_NTFY_URL`                        | unset                   | Full ntfy topic URL; enables degradation and pre-reboot push alerts             |
 | `DW_NTFY_TOKEN_FILE`                 | unset                   | Optional file containing an ntfy access token                                  |
 | `DW_NTFY_TIMEOUT_SECONDS`            | `5.0`                   | Max notification delivery delay before recovery continues                      |
+| `DW_HTTP_PORT`                       | unset                   | Optional port to expose current state via HTTP GET at `/` or `/state`          |
 
 ## License
 
