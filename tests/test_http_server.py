@@ -31,7 +31,7 @@ def test_http_server_lifecycle_and_requests(mock_thread, mock_server_init):
     # --- Test valid path (/) ---
     handler.path = "/"
     state = WatchdogState()
-    state.consecutive_failures = 42
+    state.breaker_tripped = True
     store.load.return_value = state
 
     handler.do_GET()
@@ -39,7 +39,7 @@ def test_http_server_lifecycle_and_requests(mock_thread, mock_server_init):
     handler.send_response.assert_called_with(200)
     handler.wfile.write.assert_called_once()
     response_data = json.loads(handler.wfile.write.call_args[0][0])
-    assert response_data["consecutive_failures"] == 42
+    assert response_data["breaker_tripped"] is True
     handler.log_message("format", "args")  # Test log_message override does not crash
 
     # --- Test valid path (/state) ---

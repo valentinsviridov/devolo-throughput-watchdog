@@ -125,7 +125,7 @@ def log_result(
             "timestamp": format_log_timestamp(),
             "status": result.status.value,
             "reason": result.reason,
-            "consecutive_failures": failures,
+            "failures_in_window": failures,
             "fail_limit": fail_limit,
             "action": action.value,
             "metrics": {
@@ -241,8 +241,8 @@ def _execute_reboot(
                 "action=reboot device=%s post_reboot_verification=success",
                 settings.devolo_ip,
             )
-            state.consecutive_failures = 0
             state.breaker_tripped = False
+            state.degraded_timestamps.clear()
         else:
             LOG.warning(
                 "action=reboot device=%s post_reboot_verification=failed status=%s reason=%s",
@@ -352,7 +352,7 @@ def run_daemon(
 
         log_result(
             result,
-            state.consecutive_failures,
+            len(state.degraded_timestamps),
             settings.fail_limit,
             action,
             settings.log_format,
@@ -363,7 +363,7 @@ def run_daemon(
                 settings,
                 degradation_notification(
                     result.reason,
-                    state.consecutive_failures,
+                    len(state.degraded_timestamps),
                     settings.fail_limit,
                 ),
             )

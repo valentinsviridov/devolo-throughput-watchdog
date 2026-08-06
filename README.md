@@ -80,11 +80,11 @@ graph TD
 
     EvalStep --> CheckStatus{"Status Result?"}
 
-    CheckStatus -- "HEALTHY" --> ResetCounter["Reset consecutive failures"]
-    CheckStatus -- "UNAVAILABLE / MISCONFIGURED" --> ResetCounter
-    CheckStatus -- "DEGRADED" --> IncCounter["Increment Failures<br/>(failures += 1)<br/>Notify once per degradation episode"]
+    CheckStatus -- "HEALTHY" --> ResetCounter["Clear observation window"]
+    CheckStatus -- "UNAVAILABLE / MISCONFIGURED" --> NeutralResult["Neutral Result<br/>(Window remains unchanged)"]
+    CheckStatus -- "DEGRADED" --> IncCounter["Add timestamp to window<br/>Notify once per degradation episode"]
 
-    IncCounter --> CheckFailLimit{"failures >= DW_FAIL_LIMIT?"}
+    IncCounter --> CheckFailLimit{"degraded count in window<br/>>= DW_FAIL_LIMIT?"}
     CheckFailLimit -- "No" --> WaitInterval["Wait interval_seconds"]
 
     CheckFailLimit -- "Yes" --> CheckBreaker{"attempts in moving window<br/>< DW_MAX_REBOOTS_IN_WINDOW?"}
@@ -94,9 +94,10 @@ graph TD
 
     RebootStep --> CheckVerify{"Verification Passed?"}
     CheckVerify -- "Yes (HEALTHY)" --> ResetCounter
-    CheckVerify -- "No (DEGRADED / Error)" --> RetainFailures["Retain Failure Counter & Attempt"] --> WaitCooldown
+    CheckVerify -- "No (DEGRADED / Error)" --> RetainFailures["Retain Failure Window & Attempt"] --> WaitCooldown
 
     ResetCounter --> WaitInterval
+    NeutralResult --> WaitInterval
     WaitInterval --> Start
     WaitCooldown --> Start
 ```
@@ -125,13 +126,13 @@ stateDiagram-v2
         CheckStatus --> Misconfigured: System Binary Missing / Invalid Config
     }
 
-    Healthy --> ResetStreak: consecutive_failures = 0, breaker_tripped = False
-    Unavailable --> ResetStreak: consecutive_failures = 0 (streak must be strictly consecutive)
-    Misconfigured --> ResetStreak: consecutive_failures = 0
+    Healthy --> ClearWindow: degraded_timestamps.clear(), breaker_tripped = False
+    Unavailable --> IdleWait: Window unchanged
+    Misconfigured --> IdleWait: Window unchanged
 
-    Degraded --> IncrementStreak: consecutive_failures += 1
-    IncrementStreak --> IdleWait: consecutive_failures < DW_FAIL_LIMIT (3)
-    IncrementStreak --> TriggerAction: consecutive_failures >= DW_FAIL_LIMIT (3)
+    Degraded --> AddToWindow: Add timestamp to window
+    AddToWindow --> IdleWait: degraded count < DW_FAIL_LIMIT (3)
+    AddToWindow --> TriggerAction: degraded count >= DW_FAIL_LIMIT (3)
 
     state TriggerAction {
         [*] --> CheckWindowRateLimit
@@ -143,12 +144,12 @@ stateDiagram-v2
         RecordAttempt --> PreRebootNotify: Best-effort ntfy publish
         PreRebootNotify --> CallDevoloAPI: async_restart()
         CallDevoloAPI --> PostRebootVerify: API Success
-        PostRebootVerify --> ResetStreak: Verification HEALTHY
+        PostRebootVerify --> ClearWindow: Verification HEALTHY
         PostRebootVerify --> IdleWait: Verification Failed
         CallDevoloAPI --> IdleWait: API Error / Rejected (Attempt retained)
     }
 
-    ResetStreak --> IdleWait
+    ClearWindow --> IdleWait
     IdleWait --> EvaluateCycle: Sleep interval_seconds (or cooldown_seconds)
 ```
 
@@ -215,13 +216,13 @@ Devolo Magic adapters communicate over household electrical wiring. Their manage
 
 ### Policy Rules & Evaluation Matrix
 
-| WAN / iperf3 Throughput               | PLC PHY Link Rate                           | `DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT` | Evaluation Status         | Decision & Action                                     |
-|---------------------------------------|---------------------------------------------|--------------------------------------|---------------------------|-------------------------------------------------------|
-| **Normal** (>= Min Upload & Download) | **Healthy** (>= `DW_MIN_PLC_PHY_RATE_MBPS`) | `true` or `false`                    | `healthy`                 | Failure counter reset to 0                            |
-| **Any / not run**                     | **Degraded** (< `DW_MIN_PLC_PHY_RATE_MBPS`) | `true` or `false`                    | `degraded`                | Failure counter incremented toward reboot             |
-| **Low** (< Min Upload or Download)    | **Healthy** (>= `DW_MIN_PLC_PHY_RATE_MBPS`) | `true` or `false`                    | `measurement-unavailable` | Counter reset to 0 (Reboot suppressed: WAN/ISP issue) |
-| **Low** (< Min Upload or Download)    | **Unqueried / Unavailable**                 | `true` (Default)                     | `measurement-unavailable` | Counter reset to 0 (Reboot suppressed: missing proof) |
-| **Low** (< Min Upload or Download)    | **Unqueried / Unavailable**                 | `false`                              | `degraded`                | Failure counter incremented toward reboot             |
+| WAN / iperf3 Throughput               | PLC PHY Link Rate                           | `DW_REQUIRE_PLC_EVIDENCE_FOR_REBOOT` | Evaluation Status         | Decision & Action                                        |
+|---------------------------------------|---------------------------------------------|--------------------------------------|---------------------------|----------------------------------------------------------|
+| **Normal** (>= Min Upload & Download) | **Healthy** (>= `DW_MIN_PLC_PHY_RATE_MBPS`) | `true` or `false`                    | `healthy`                 | Observation window cleared                               |
+| **Any / not run**                     | **Degraded** (< `DW_MIN_PLC_PHY_RATE_MBPS`) | `true` or `false`                    | `degraded`                | Timestamp added to observation window                    |
+| **Low** (< Min Upload or Download)    | **Healthy** (>= `DW_MIN_PLC_PHY_RATE_MBPS`) | `true` or `false`                    | `measurement-unavailable` | Window unchanged (Reboot suppressed: WAN/ISP issue)      |
+| **Low** (< Min Upload or Download)    | **Unqueried / Unavailable**                 | `true` (Default)                     | `measurement-unavailable` | Window unchanged (Reboot suppressed: missing proof)      |
+| **Low** (< Min Upload or Download)    | **Unqueried / Unavailable**                 | `false`                              | `degraded`                | Timestamp added to observation window                    |
 
 ---
 
@@ -506,7 +507,8 @@ built in a temporary directory and removed afterward.
 | `DW_PARALLEL_STREAMS`                | `1`                     | Parallel iperf3 streams                                                        |
 | `DW_INTERVAL_SECONDS`                | `600`                   | Target time between cycle starts                                               |
 | `DW_ACTION`                          | `log`                   | Action mode: `log` or `reboot`                                                 |
-| `DW_FAIL_LIMIT`                      | `3`                     | Consecutive degraded cycles before triggering action                           |
+| `DW_FAIL_LIMIT`                      | `3`                     | Degraded cycles required in the observation window to trigger action           |
+| `DW_FAIL_WINDOW_SECONDS`             | `3600`                  | Observation window for accumulating degraded cycles                            |
 | `DW_COOLDOWN_SECONDS`                | `600`                   | Target time before the next cycle after a reboot decision                      |
 | `DW_INITIAL_DELAY_SECONDS`           | `30`                    | Startup delay in daemon mode                                                   |
 | `DW_PING_COUNT`                      | `2`                     | Packets sent by each gateway/device ping check                                 |

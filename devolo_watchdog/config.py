@@ -98,6 +98,7 @@ class Settings:
     interval_seconds: int = 600
     parallel_streams: int = 1
     fail_limit: int = 3
+    fail_window_seconds: int = 3600
     cooldown_seconds: int = 600
     initial_delay_seconds: int = 30
     ping_count: int = 2
@@ -164,6 +165,9 @@ class Settings:
                 os.getenv("DW_PARALLEL_STREAMS", "1"), "DW_PARALLEL_STREAMS"
             ),
             fail_limit=_parse_int(os.getenv("DW_FAIL_LIMIT", "3"), "DW_FAIL_LIMIT"),
+            fail_window_seconds=_parse_int(
+                os.getenv("DW_FAIL_WINDOW_SECONDS", "3600"), "DW_FAIL_WINDOW_SECONDS"
+            ),
             cooldown_seconds=_parse_int(
                 os.getenv("DW_COOLDOWN_SECONDS", "600"), "DW_COOLDOWN_SECONDS"
             ),
@@ -246,6 +250,7 @@ class Settings:
                 "DW_INTERVAL_SECONDS": self.interval_seconds,
                 "DW_PARALLEL_STREAMS": self.parallel_streams,
                 "DW_FAIL_LIMIT": self.fail_limit,
+                "DW_FAIL_WINDOW_SECONDS": self.fail_window_seconds,
                 "DW_COOLDOWN_SECONDS": self.cooldown_seconds,
                 "DW_PING_COUNT": self.ping_count,
                 "DW_PING_TIMEOUT_SECONDS": self.ping_timeout_seconds,

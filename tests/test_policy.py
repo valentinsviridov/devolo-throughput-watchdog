@@ -25,6 +25,7 @@ def make_settings(**kwargs) -> Settings:
         "min_upload_mbps": 100.0,
         "min_download_mbps": 80.0,
         "fail_limit": 3,
+        "fail_window_seconds": 3600,
         "action": "reboot",
         "require_plc_evidence_for_reboot": True,
     }
@@ -184,31 +185,97 @@ class TransitionTests(unittest.TestCase):
     def test_unavailable_resets_consecutive_failure_streak(self):
         st = make_settings(fail_limit=3)
         state = WatchdogState(
-            consecutive_failures=2,
             degradation_notification_sent=True,
+            degraded_timestamps=[900.0, 950.0],
         )
         now = 1000.0
 
         result = CycleResult(status=Status.UNAVAILABLE, reason="busy")
         new_state, action, _ = transition(state, result, st, now)
-        self.assertEqual(new_state.consecutive_failures, 0)
         self.assertFalse(new_state.degradation_notification_sent)
+        self.assertEqual(len(new_state.degraded_timestamps), 2)
+        self.assertEqual(action, ActionType.NONE)
+
+    def test_unavailable_does_not_clear_degradation_window(self):
+        st = make_settings(fail_limit=3, fail_window_seconds=3600)
+        state = WatchdogState(degraded_timestamps=[1000.0])
+        now = 1050.0
+
+        result = CycleResult(status=Status.UNAVAILABLE, reason="busy")
+        new_state, _, _ = transition(state, result, st, now)
+
+        self.assertEqual(new_state.degraded_timestamps, [1000.0])
+
+    def test_healthy_clears_degradation_window(self):
+        st = make_settings(fail_limit=3, fail_window_seconds=3600)
+        state = WatchdogState(degraded_timestamps=[1000.0, 1050.0])
+        now = 1100.0
+
+        result = CycleResult(status=Status.HEALTHY, reason="ok")
+        new_state, _, _ = transition(state, result, st, now)
+
+        self.assertEqual(new_state.degraded_timestamps, [])
+
+    def test_sliding_window_triggers_reboot_across_unavailable_gaps(self):
+        st = make_settings(fail_limit=3, fail_window_seconds=3600)
+        state = WatchdogState()
+
+        # t=0 DEGRADED
+        state, _, _ = transition(state, CycleResult(status=Status.DEGRADED, reason="1"), st, 0.0)
+        # t=150 UNAVAILABLE
+        state, _, _ = transition(
+            state, CycleResult(status=Status.UNAVAILABLE, reason="2"), st, 150.0
+        )
+        # t=600 DEGRADED
+        state, _, _ = transition(state, CycleResult(status=Status.DEGRADED, reason="3"), st, 600.0)
+        # t=750 UNAVAILABLE
+        state, _, _ = transition(
+            state, CycleResult(status=Status.UNAVAILABLE, reason="4"), st, 750.0
+        )
+        # t=1200 DEGRADED
+        state, action, _ = transition(
+            state, CycleResult(status=Status.DEGRADED, reason="5"), st, 1200.0
+        )
+
+        self.assertEqual(action, ActionType.REBOOT)
+        self.assertEqual(len(state.degraded_timestamps), 3)
+
+    def test_degraded_timestamps_pruned_outside_window(self):
+        st = make_settings(fail_limit=3, fail_window_seconds=3600)
+        state = WatchdogState(degraded_timestamps=[100.0, 2000.0])
+        now = 4000.0  # 4000 - 3600 = 400 (cutoff), so 100 should drop, 2000 stays
+
+        result = CycleResult(status=Status.DEGRADED, reason="slow")
+        new_state, action, _ = transition(state, result, st, now)
+
+        self.assertEqual(new_state.degraded_timestamps, [2000.0, 4000.0])
+        self.assertEqual(action, ActionType.NONE)
+
+    def test_window_entries_age_out_without_action(self):
+        st = make_settings(fail_limit=3, fail_window_seconds=3600)
+        # t=100, 200 DEGRADED
+        state = WatchdogState(degraded_timestamps=[100.0, 200.0])
+        now = 3900.0  # cutoff = 300, so both drop. New entry makes 1
+
+        result = CycleResult(status=Status.DEGRADED, reason="slow")
+        new_state, action, _ = transition(state, result, st, now)
+
+        self.assertEqual(new_state.degraded_timestamps, [3900.0])
         self.assertEqual(action, ActionType.NONE)
 
     def test_healthy_resets_breaker_tripped(self):
         st = make_settings(fail_limit=3)
-        state = WatchdogState(consecutive_failures=2, breaker_tripped=True)
+        state = WatchdogState(breaker_tripped=True)
         now = 1000.0
 
         result = CycleResult(status=Status.HEALTHY, reason="ok")
         new_state, action, _ = transition(state, result, st, now)
         self.assertFalse(new_state.breaker_tripped)
-        self.assertEqual(new_state.consecutive_failures, 0)
         self.assertEqual(action, ActionType.NONE)
 
     def test_action_log_when_fail_limit_reached(self):
         st = make_settings(fail_limit=2, action="log")
-        state = WatchdogState(consecutive_failures=1)
+        state = WatchdogState(degraded_timestamps=[900.0])
         now = 1000.0
 
         result = CycleResult(status=Status.DEGRADED, reason="slow")
@@ -218,7 +285,7 @@ class TransitionTests(unittest.TestCase):
 
     def test_circuit_breaker_window_rate_limits_reboots(self):
         st = make_settings(fail_limit=1, max_reboots_in_window=3, reboot_window_hours=6.0)
-        state = WatchdogState(consecutive_failures=0)
+        state = WatchdogState()
         now = 10000.0
 
         state.record_reboot(now - 100, accepted=True, reason="r1")
@@ -235,7 +302,7 @@ class TransitionTests(unittest.TestCase):
     def test_circuit_breaker_rearms_after_window_expires(self):
         st = make_settings(fail_limit=1, max_reboots_in_window=1, reboot_window_hours=6.0)
         now = 100_000.0
-        state = WatchdogState(consecutive_failures=0, breaker_tripped=True)
+        state = WatchdogState(breaker_tripped=True)
         state.record_reboot(now - (7 * 3600), accepted=True, reason="old attempt")
 
         result = CycleResult(status=Status.DEGRADED, reason="slow")

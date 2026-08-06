@@ -350,7 +350,6 @@ class DaemonExecutionTests(unittest.TestCase):
         self, mock_collect, mock_load, mock_notify
     ):
         mock_load.return_value = WatchdogState(
-            consecutive_failures=1,
             degradation_notification_sent=True,
             last_status=Status.DEGRADED,
         )
@@ -396,7 +395,6 @@ class DaemonExecutionTests(unittest.TestCase):
         self, mock_collect, mock_load, mock_notify
     ):
         mock_load.return_value = WatchdogState(
-            consecutive_failures=1,
             degradation_notification_sent=True,
             last_status=Status.DEGRADED,
         )
@@ -421,7 +419,6 @@ class DaemonExecutionTests(unittest.TestCase):
         self, mock_collect, mock_load, mock_notify
     ):
         mock_load.return_value = WatchdogState(
-            consecutive_failures=0,
             degradation_notification_sent=False,
             last_status=Status.HEALTHY,
         )

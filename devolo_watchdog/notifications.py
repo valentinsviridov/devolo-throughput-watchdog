@@ -58,14 +58,15 @@ def send_ntfy_notification(settings: Settings, notification: Notification) -> No
 
 def degradation_notification(
     result_reason: str,
-    consecutive_failures: int,
+    window_degraded_count: int,
     fail_limit: int,
 ) -> Notification:
     return Notification(
         event="degradation_detected",
         title="Network degradation detected",
         message=(
-            f"{result_reason}\nConsecutive degraded checks: {consecutive_failures}/{fail_limit}."
+            f"{result_reason}\n"
+            f"Degraded checks in observation window: {window_degraded_count}/{fail_limit}."
         ),
         priority="high",
         tags="warning,signal_strength",

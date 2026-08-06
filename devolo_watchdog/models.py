@@ -119,7 +119,6 @@ class RebootAttempt:
 
 @dataclass
 class WatchdogState:
-    consecutive_failures: int = 0
     degradation_notification_sent: bool = False
     reboot_history: list[RebootAttempt] = field(default_factory=list)
     last_reboot_timestamp: float | None = None
@@ -127,6 +126,7 @@ class WatchdogState:
     last_status: Status | None = None
     last_reason: str | None = None
     last_check_timestamp: float | None = None
+    degraded_timestamps: list[float] = field(default_factory=list)
 
     def recent_reboot_count(self, now: float, window_seconds: float) -> int:
         cutoff = now - window_seconds
@@ -149,7 +149,6 @@ class WatchdogState:
             return dt.strftime(fmt)[:-3] + "Z"
 
         return {
-            "consecutive_failures": self.consecutive_failures,
             "degradation_notification_sent": self.degradation_notification_sent,
             "reboot_history": [a.to_dict() for a in self.reboot_history],
             "last_reboot_timestamp": format_ts(self.last_reboot_timestamp),
@@ -157,6 +156,7 @@ class WatchdogState:
             "last_status": self.last_status.value if self.last_status else None,
             "last_reason": self.last_reason,
             "last_check_timestamp": format_ts(self.last_check_timestamp),
+            "degraded_timestamps": [format_ts(ts) for ts in self.degraded_timestamps],
         }
 
     @classmethod
@@ -183,7 +183,6 @@ class WatchdogState:
         history_raw = data.get("reboot_history", [])
         history = [RebootAttempt.from_dict(h) for h in history_raw]
         return cls(
-            consecutive_failures=int(data.get("consecutive_failures", 0)),
             degradation_notification_sent=bool(data.get("degradation_notification_sent", False)),
             reboot_history=history,
             last_reboot_timestamp=parse_ts(data.get("last_reboot_timestamp")),
@@ -191,4 +190,9 @@ class WatchdogState:
             last_status=last_status,
             last_reason=data.get("last_reason"),
             last_check_timestamp=parse_ts(data.get("last_check_timestamp")),
+            degraded_timestamps=[
+                ts
+                for val in data.get("degraded_timestamps", [])
+                if (ts := parse_ts(val)) is not None
+            ],
         )

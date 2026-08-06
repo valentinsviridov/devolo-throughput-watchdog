@@ -159,16 +159,20 @@ def transition(
         state.breaker_tripped = False
 
     if result.status == Status.DEGRADED:
-        state.consecutive_failures += 1
+        state.degraded_timestamps.append(now)
+    elif result.status == Status.HEALTHY:
+        state.degradation_notification_sent = False
+        state.breaker_tripped = False
+        state.degraded_timestamps.clear()
     else:
-        # Reset consecutive failure streak on HEALTHY, UNAVAILABLE, or MISCONFIGURED
-        state.consecutive_failures = 0
+        # Reset notification state on UNAVAILABLE or MISCONFIGURED
         state.degradation_notification_sent = False
 
-    if result.status == Status.HEALTHY:
-        state.breaker_tripped = False
+    cutoff = now - settings.fail_window_seconds
+    state.degraded_timestamps = [ts for ts in state.degraded_timestamps if ts >= cutoff]
+    degraded_count = len(state.degraded_timestamps)
 
-    if state.consecutive_failures >= settings.fail_limit:
+    if degraded_count >= settings.fail_limit:
         if settings.action == "reboot":
             if recent_reboots >= settings.max_reboots_in_window:
                 state.breaker_tripped = True
@@ -183,15 +187,14 @@ def transition(
             return (
                 state,
                 ActionType.REBOOT,
-                f"Fail limit reached ({state.consecutive_failures}/{settings.fail_limit})",
+                f"Fail limit reached ({degraded_count}/{settings.fail_limit})",
             )
         else:
-            fails = state.consecutive_failures
             limit = settings.fail_limit
             return (
                 state,
                 ActionType.LOG,
-                f"Fail limit reached ({fails}/{limit}), action=log",
+                f"Fail limit reached ({degraded_count}/{limit}), action=log",
             )
 
     return state, ActionType.NONE, f"Status={result.status.value}"

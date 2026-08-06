@@ -14,14 +14,14 @@ class StateStoreTests(unittest.TestCase):
     def test_load_and_save_with_none_path(self):
         store = StateStore(None)
         state = store.load()
-        self.assertEqual(state.consecutive_failures, 0)
+        self.assertFalse(state.degradation_notification_sent)
         # save should execute cleanly without error when path is None
         self.assertTrue(store.save(state))
 
     def test_load_non_existent_file_returns_fresh_state(self):
         store = StateStore("/tmp/non_existent_watchdog_state.json")
         state = store.load()
-        self.assertEqual(state.consecutive_failures, 0)
+        self.assertFalse(state.degradation_notification_sent)
         self.assertFalse(state.breaker_tripped)
 
     def test_load_corrupted_json_returns_fresh_state(self):
@@ -33,7 +33,7 @@ class StateStoreTests(unittest.TestCase):
         try:
             store = StateStore(path)
             state = store.load()
-            self.assertEqual(state.consecutive_failures, 0)
+            self.assertFalse(state.degradation_notification_sent)
         finally:
             if os.path.exists(path):
                 os.unlink(path)
@@ -45,7 +45,6 @@ class StateStoreTests(unittest.TestCase):
         try:
             store = StateStore(path)
             state = WatchdogState(
-                consecutive_failures=3,
                 degradation_notification_sent=True,
                 breaker_tripped=True,
                 last_status=Status.DEGRADED,
@@ -54,7 +53,6 @@ class StateStoreTests(unittest.TestCase):
             self.assertTrue(store.save(state))
 
             loaded = store.load()
-            self.assertEqual(loaded.consecutive_failures, 3)
             self.assertTrue(loaded.degradation_notification_sent)
             self.assertTrue(loaded.breaker_tripped)
             self.assertEqual(loaded.last_status, Status.DEGRADED)

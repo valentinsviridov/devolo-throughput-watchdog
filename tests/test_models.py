@@ -8,7 +8,6 @@ from devolo_watchdog.models import CycleResult, Status, WatchdogState
 class ModelsTests(unittest.TestCase):
     def test_watchdog_state_serialization(self):
         state = WatchdogState(
-            consecutive_failures=2,
             degradation_notification_sent=True,
             last_reboot_timestamp=1000.0,
             breaker_tripped=True,
@@ -18,18 +17,28 @@ class ModelsTests(unittest.TestCase):
         state.record_reboot(1000.0, accepted=True, reason="Fail limit reached")
 
         d = state.to_dict()
-        self.assertEqual(d["consecutive_failures"], 2)
         self.assertTrue(d["degradation_notification_sent"])
         self.assertTrue(d["breaker_tripped"])
         self.assertEqual(d["last_status"], "degraded")
         self.assertEqual(len(d["reboot_history"]), 1)
 
         restored = WatchdogState.from_dict(d)
-        self.assertEqual(restored.consecutive_failures, 2)
         self.assertTrue(restored.degradation_notification_sent)
         self.assertTrue(restored.breaker_tripped)
         self.assertEqual(restored.last_status, Status.DEGRADED)
         self.assertEqual(len(restored.reboot_history), 1)
+
+    def test_degraded_timestamps_serialization(self):
+        state = WatchdogState(
+            degraded_timestamps=[1000.0, 2000.5],
+        )
+        d = state.to_dict()
+        self.assertEqual(len(d["degraded_timestamps"]), 2)
+        # Should be formatted as ISO timestamps
+        self.assertTrue(isinstance(d["degraded_timestamps"][0], str))
+
+        restored = WatchdogState.from_dict(d)
+        self.assertEqual(restored.degraded_timestamps, [1000.0, 2000.5])
 
     def test_recent_reboot_count_and_pruning(self):
         state = WatchdogState()
